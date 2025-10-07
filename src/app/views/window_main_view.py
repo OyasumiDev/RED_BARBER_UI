@@ -40,8 +40,8 @@ class WindowMain:
         self._page.on_route_change = self.route_change
 
         # Ruta inicial
-        # self._page.go("/login")
-        self._page.go("/home")  # <- desarrollo directo a home
+        self._page.go("/login")
+        # self._page.go("/home")  # <- desarrollo directo a home
 
     # ---------------------------
     # Configuración de ventana

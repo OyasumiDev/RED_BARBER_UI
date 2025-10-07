@@ -2,8 +2,9 @@ from __future__ import annotations
 import flet as ft
 from typing import Any, Dict, List, Optional
 
-# Usa el AppState de tu proyecto (misma ruta que en tu contenedor previo)
+# Core globales
 from app.config.application.app_state import AppState
+from app.config.application.theme_controller import ThemeController
 
 # Modelo y enums
 from app.models.trabajadores_model import TrabajadoresModel
@@ -23,26 +24,24 @@ def _f2(v: Any) -> str:
 
 class TrabajadoresContainer(ft.Container):
     """
-    Carga de datos al estilo EmpleadosContainer:
-      - Se cargan en __init__ invocando _actualizar_tabla()
-      - DataTable reconstruida explícitamente (sin TableBuilder)
-      - Acciones con IconButton directos (clickeables)
-      - Nuevo registro: fila editable con Aceptar/Cancelar
-      - Existentes: Editar -> entra en edición; Guardar (CHECK) confirma
+    Módulo de trabajadores con integración de ThemeController.
+    Conserva toda la lógica CRUD y UI original.
     """
 
     def __init__(self):
         super().__init__()
 
-        # Core
-        self.page = AppState().page
-        self.model = TrabajadoresModel()
+        # Core globales
+        self.app_state = AppState()
+        self.page = self.app_state.page
+        self.theme_ctrl = ThemeController()
+        self.colors = self.theme_ctrl.get_colors()
 
         # Estado de edición / nuevo
-        self.fila_editando: Optional[int] = None      # guarda ID en edición
+        self.fila_editando: Optional[int] = None
         self.fila_nueva_en_proceso: bool = False
 
-        # Filtros/orden (similar a tu ejemplo)
+        # Filtros/orden
         self.sort_id_filter: Optional[str] = None
         self.sort_name_filter: Optional[str] = None
         self.orden_actual = {
@@ -53,11 +52,15 @@ class TrabajadoresContainer(ft.Container):
             E_TRABAJADORES.ESTADO.value: None,
         }
 
+        # Modelo
+        self.model = TrabajadoresModel()
+
         # Tabla y scroll
         self.table: Optional[ft.DataTable] = None
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
+            bgcolor=self.colors.get("BG_COLOR"),
             content=ft.Column(
                 controls=[],
                 alignment=ft.MainAxisAlignment.START,
@@ -66,10 +69,8 @@ class TrabajadoresContainer(ft.Container):
             ),
         )
 
-        self.scroll_column_ref = ft.Ref[ft.Column]()
         self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
         self.scroll_column = ft.Column(
-            ref=self.scroll_column_ref,
             alignment=ft.MainAxisAlignment.START,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             scroll=ft.ScrollMode.ALWAYS,
@@ -77,57 +78,30 @@ class TrabajadoresContainer(ft.Container):
             controls=[self.table_container, self.scroll_anchor],
         )
 
-        # ---- Botones header (estilo tu ejemplo con GestureDetector) ----
-        self.import_button = ft.GestureDetector(
-            on_tap=lambda e: self._on_importar(),
-            content=ft.Container(
-                padding=10,
-                border_radius=20,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row(
-                    [
-                        ft.Icon(name=ft.icons.FILE_DOWNLOAD_OUTLINED, size=18),
-                        ft.Text("Importar", size=12, weight="bold"),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=6,
+        # ---------------- Botones de cabecera ----------------
+        def _btn(icon_name, text, on_click):
+            return ft.GestureDetector(
+                on_tap=on_click,
+                content=ft.Container(
+                    padding=10,
+                    border_radius=20,
+                    bgcolor=self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT),
+                    content=ft.Row(
+                        [
+                            ft.Icon(name=icon_name, size=18, color=self.colors.get("FG_COLOR")),
+                            ft.Text(text, size=12, weight="bold", color=self.colors.get("FG_COLOR")),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=6,
+                    ),
                 ),
-            ),
-        )
-        self.export_button = ft.GestureDetector(
-            on_tap=lambda e: self._on_exportar(),
-            content=ft.Container(
-                padding=10,
-                border_radius=20,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row(
-                    [
-                        ft.Icon(name=ft.icons.FILE_UPLOAD_OUTLINED, size=18),
-                        ft.Text("Exportar", size=12, weight="bold"),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=6,
-                ),
-            ),
-        )
-        self.add_button = ft.GestureDetector(
-            on_tap=lambda e: self._insertar_fila_nueva(),
-            content=ft.Container(
-                padding=10,
-                border_radius=20,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row(
-                    [
-                        ft.Icon(name=ft.icons.ADD, size=18),
-                        ft.Text("Agregar", size=12, weight="bold"),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=6,
-                ),
-            ),
-        )
+            )
 
-        # ---- Toolbar (filtros) ----
+        self.import_button = _btn(ft.icons.FILE_DOWNLOAD_OUTLINED, "Importar", lambda e: self._on_importar())
+        self.export_button = _btn(ft.icons.FILE_UPLOAD_OUTLINED, "Exportar", lambda e: self._on_exportar())
+        self.add_button = _btn(ft.icons.ADD, "Agregar", lambda e: self._insertar_fila_nueva())
+
+        # ---------------- Toolbar (filtros) ----------------
         self.sort_id_input = ft.TextField(
             label="Ordenar por ID",
             hint_text="Escribe un ID y presiona Enter",
@@ -135,10 +109,13 @@ class TrabajadoresContainer(ft.Container):
             keyboard_type=ft.KeyboardType.NUMBER,
             on_submit=lambda e: self._aplicar_sort_id(),
             on_change=self._id_on_change_auto_reset,
+            bgcolor=self.colors.get("CARD_BG"),
+            color=self.colors.get("FG_COLOR"),
         )
         self.sort_id_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar ID",
+            icon_color=self.colors.get("FG_COLOR"),
             on_click=lambda e: self._limpiar_sort_id(),
         )
 
@@ -148,16 +125,20 @@ class TrabajadoresContainer(ft.Container):
             width=260,
             on_submit=lambda e: self._aplicar_sort_nombre(),
             on_change=self._nombre_on_change_auto_reset,
+            bgcolor=self.colors.get("CARD_BG"),
+            color=self.colors.get("FG_COLOR"),
         )
         self.sort_name_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar nombre",
+            icon_color=self.colors.get("FG_COLOR"),
             on_click=lambda e: self._limpiar_sort_nombre(),
         )
 
-        # Content raíz
+        # ---------------- Layout raíz ----------------
         self.content = ft.Container(
             expand=True,
+            bgcolor=self.colors.get("BG_COLOR"),
             padding=20,
             content=ft.Column(
                 expand=True,
@@ -179,7 +160,7 @@ class TrabajadoresContainer(ft.Container):
                             self.sort_name_clear_btn,
                         ],
                     ),
-                    ft.Divider(height=1),
+                    ft.Divider(color=self.colors.get("DIVIDER_COLOR")),
                     ft.Container(
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.only(top=10),
@@ -190,8 +171,36 @@ class TrabajadoresContainer(ft.Container):
             ),
         )
 
-        # 👇 Cargar datos inmediatamente (como en tu ejemplo)
+        # 🔄 Suscripción a cambio de tema global
+        self.app_state.on_theme_change(self._on_theme_changed)
+
+        # Carga inicial
         self._actualizar_tabla()
+
+    # ---------------------- Reactividad de tema ----------------------
+    def _on_theme_changed(self):
+        """Se invoca automáticamente al cambiar el tema global."""
+        self.colors = self.theme_ctrl.get_colors()
+        self._recolor_ui()
+
+    def _recolor_ui(self):
+        """Actualiza dinámicamente colores de la UI."""
+        for btn in [self.import_button, self.export_button, self.add_button]:
+            if isinstance(btn.content, ft.Container):
+                btn.content.bgcolor = self.colors.get("BTN_BG")
+                for ctrl in btn.content.content.controls:
+                    if isinstance(ctrl, ft.Icon):
+                        ctrl.color = self.colors.get("FG_COLOR")
+                    if isinstance(ctrl, ft.Text):
+                        ctrl.color = self.colors.get("FG_COLOR")
+        self.sort_id_input.bgcolor = self.colors.get("CARD_BG")
+        self.sort_name_input.bgcolor = self.colors.get("CARD_BG")
+        self.table_container.bgcolor = self.colors.get("BG_COLOR")
+        if self.page:
+            try:
+                self.page.update()
+            except Exception:
+                pass
 
     # ----------------------------- Filtros / Orden -----------------------------
     def _aplicar_sort_id(self):

@@ -1,5 +1,3 @@
-# app/ui/factory/boton_factory.py
-
 from __future__ import annotations
 import flet as ft
 from typing import Callable, Optional, List
@@ -16,6 +14,7 @@ class BotonFactory:
     - Los "pill buttons" usan GestureDetector + Container para replicar el estilo
       de encabezado con ícono/imagen + texto.
     - Las acciones de fila usan IconButton con tooltips y colores de estado.
+      ⚠️ Se devuelven SIN contenedores envolventes para que el click no se bloquee.
     """
 
     # ===== Estilos por defecto =====
@@ -27,8 +26,10 @@ class BotonFactory:
     _ICON_SIZE = 20
     _ICON_EDIT = (ft.icons.EDIT, ft.colors.BLUE_600)
     _ICON_DELETE = (ft.icons.DELETE_OUTLINE, ft.colors.RED_600)
-    _ICON_ACCEPT = (ft.icons.CHECK_CIRCLE, ft.colors.GREEN_600)
-    _ICON_CANCEL = (ft.icons.CANCEL, ft.colors.GREY_700)
+
+    # ✅ Alineado con los que te funcionaron en el container:
+    _ICON_ACCEPT = (ft.icons.CHECK, ft.colors.GREEN_600)
+    _ICON_CANCEL = (ft.icons.CLOSE, ft.colors.RED_600)
 
     def __init__(self) -> None:
         pass
@@ -85,6 +86,7 @@ class BotonFactory:
     ) -> ft.IconButton:
         """
         Crea un IconButton estándar para acciones de fila.
+        ⚠️ Sin wrappers: úsalo directo dentro del DataCell.
         """
         return ft.IconButton(
             icon=icon_name,

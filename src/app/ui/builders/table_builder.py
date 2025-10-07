@@ -1,5 +1,3 @@
-# app/ui/builders/table_builder.py
-
 from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 import flet as ft
@@ -52,7 +50,6 @@ class TableBuilder:
         data_row_min_height: int = 40,
         actions_title: str = "Acciones",
         actions_width: Optional[int] = 140,
-        actions_padding: int = 4,
         dense_text: bool = True,
         # identificación de filas
         id_key: Optional[str] = None,
@@ -82,7 +79,6 @@ class TableBuilder:
         self.columns = columns
         self.actions_title = actions_title
         self.actions_width = actions_width
-        self.actions_padding = actions_padding
 
         # estado de datos
         self._rows_data: List[Dict[str, Any]] = []
@@ -215,7 +211,7 @@ class TableBuilder:
     def _actions_for_row(self, row: Dict[str, Any]) -> ft.DataCell:
         is_new = self._is_new_row(row)
 
-        # ⚠️ Sin Container envolviendo: evita overlays que capturan el click.
+        # ⚠️ SIN Container envolviendo: usa IconButtons del factory "desnudos", como en tu container.
         if is_new:
             btns = ft.Row(
                 [
@@ -234,8 +230,6 @@ class TableBuilder:
             spacing=8, alignment=ft.MainAxisAlignment.START
         )
         return ft.DataCell(btns)
-
-
 
     def _build_row(self, row: Dict[str, Any]) -> ft.DataRow:
         cells: List[ft.DataCell] = []
