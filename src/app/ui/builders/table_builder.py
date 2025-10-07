@@ -215,46 +215,26 @@ class TableBuilder:
     def _actions_for_row(self, row: Dict[str, Any]) -> ft.DataCell:
         is_new = self._is_new_row(row)
 
+        # ⚠️ Sin Container envolviendo: evita overlays que capturan el click.
         if is_new:
-            # ✅ Botones nativos (evitan wrappers que absorben eventos)
             btns = ft.Row(
                 [
-                    ft.ElevatedButton(
-                        text="Aceptar",
-                        icon=ft.icons.CHECK,
-                        on_click=(lambda e, r=row: self.on_accept and self.on_accept(r)),
-                        height=36,
-                    ),
-                    ft.OutlinedButton(
-                        text="Cancelar",
-                        icon=ft.icons.CLOSE,
-                        on_click=(lambda e, r=row: self.on_cancel and self.on_cancel(r)),
-                        height=36,
-                    ),
+                    boton_aceptar(lambda e, r=row: self.on_accept and self.on_accept(r)),
+                    boton_cancelar(lambda e, r=row: self.on_cancel and self.on_cancel(r)),
                 ],
-                spacing=8,
-                alignment=ft.MainAxisAlignment.START,
+                spacing=8, alignment=ft.MainAxisAlignment.START
             )
-            # ⚠️ No envolver en Container para no interceptar taps
             return ft.DataCell(btns)
 
-        # 🔁 Para existentes, mantenemos tu BotonFactory (estilo unificado)
         btns = ft.Row(
             [
                 boton_editar(lambda e, r=row: self.on_edit and self.on_edit(r)),
                 boton_borrar(lambda e, r=row: self.on_delete and self.on_delete(r)),
             ],
-            spacing=6, alignment=ft.MainAxisAlignment.START
+            spacing=8, alignment=ft.MainAxisAlignment.START
         )
-        # En acciones existentes es seguro un Container fino para ancho fijo
-        container = ft.Container(
-            btns,
-            width=self.actions_width,
-            padding=ft.padding.symmetric(horizontal=self.actions_padding),
-            alignment=ft.alignment.center_left,
-        ) if self.actions_width else btns
+        return ft.DataCell(btns)
 
-        return ft.DataCell(container)
 
 
     def _build_row(self, row: Dict[str, Any]) -> ft.DataRow:

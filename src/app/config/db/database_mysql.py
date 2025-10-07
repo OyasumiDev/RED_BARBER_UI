@@ -479,3 +479,67 @@ class DatabaseMysql:
             if page:
                 mostrar_mensaje(page, "Error de Importación", str(e))
             return False
+
+    # -------------------------
+    # Lectura: aliases de compatibilidad
+    # -------------------------
+    def get_all(
+        self, query: str, params: Params = (), dictionary: bool = True
+    ) -> List[DictRow] | List[TupleRow]:
+        """
+        Alias compatible: retorna TODAS las filas.
+        - dictionary=True -> lista de dicts
+        - dictionary=False -> lista de tuplas
+        """
+        try:
+            with self._cursor(dictionary=dictionary) as cursor:
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return rows or []
+        except Exception as e:
+            print(f"❌ Error en get_all: {e}\nSQL: {query}\nParams: {params}")
+            return []
+
+    def get_one(
+        self, query: str, params: Params = (), dictionary: bool = True
+    ) -> DictRow | TupleRow | None:
+        """
+        Alias compatible: retorna UNA fila o None si no hay resultados.
+        - dictionary=True -> dict o None
+        - dictionary=False -> tuple o None
+        """
+        try:
+            with self._cursor(dictionary=dictionary) as cursor:
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+                return row if row is not None else None
+        except Exception as e:
+            print(f"❌ Error en get_one: {e}\nSQL: {query}\nParams: {params}")
+            return None
+
+    # Aliases adicionales (por si otros módulos los usan)
+    def fetch_all(
+        self, query: str, params: Params = (), dictionary: bool = True
+    ) -> List[DictRow] | List[TupleRow]:
+        """Alias a get_all()."""
+        return self.get_all(query, params, dictionary=dictionary)
+
+    def fetch_one(
+        self, query: str, params: Params = (), dictionary: bool = True
+    ) -> DictRow | TupleRow | None:
+        """Alias a get_one()."""
+        return self.get_one(query, params, dictionary=dictionary)
+
+    def select(self, query: str, params: Params = ()) -> List[DictRow]:
+        """
+        Alias estilo 'select': siempre retorna lista de dicts (dictionary=True).
+        """
+        rows = self.get_all(query, params, dictionary=True)
+        # Garantiza tipo list[dict]
+        return rows if isinstance(rows, list) else []
+
+    def query(self, query: str, params: Params = ()) -> List[DictRow]:
+        """
+        Alias genérico a select() (en algunos proyectos se usa 'query' para SELECT).
+        """
+        return self.select(query, params)
