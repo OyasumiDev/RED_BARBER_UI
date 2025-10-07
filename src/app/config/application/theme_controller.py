@@ -1,3 +1,4 @@
+# app/config/application/theme_controller.py
 import flet as ft
 from app.helpers.class_singleton import class_singleton
 from app.config.application.app_state import AppState
@@ -31,11 +32,8 @@ class ThemeController:
             pass
 
         if isinstance(stored, str):
-            stored = stored.strip().lower()
-            if stored == "dark":
-                self.tema_oscuro = True
-            elif stored == "light":
-                self.tema_oscuro = False
+            s = stored.strip().lower()
+            self.tema_oscuro = (s == "dark")
         elif isinstance(stored, bool):
             self.tema_oscuro = stored
         else:
@@ -47,9 +45,7 @@ class ThemeController:
     # Integración con la Page
     # ---------------------------
     def attach_page(self, page: ft.Page):
-        """
-        Conecta la page principal al controlador y aplica el tema guardado.
-        """
+        """Conecta la page principal y aplica el tema guardado."""
         self.page = page
         self.app_state.set_page(page)
         self._init_from_storage()
@@ -62,14 +58,19 @@ class ThemeController:
         self.tema_oscuro = not self.tema_oscuro
         self._save_to_storage()
         self.apply_theme()
-        self.app_state.set_dark(self.tema_oscuro)
+        # Notifica (si tu AppState implementa listeners)
+        set_dark = getattr(self.app_state, "set_dark", None)
+        if callable(set_dark):
+            set_dark(self.tema_oscuro)
 
     def set_dark(self, value: bool):
         """Fuerza un modo específico (True=oscuro, False=claro)."""
         self.tema_oscuro = bool(value)
         self._save_to_storage()
         self.apply_theme()
-        self.app_state.set_dark(self.tema_oscuro)
+        set_dark = getattr(self.app_state, "set_dark", None)
+        if callable(set_dark):
+            set_dark(self.tema_oscuro)
 
     def _save_to_storage(self):
         """Guarda la preferencia en client_storage y AppState."""
@@ -81,18 +82,25 @@ class ThemeController:
         self.app_state.set("tema_oscuro", self.tema_oscuro)
 
     def apply_theme(self):
-        """Aplica el tema actual a la página y a AppState."""
-        self.app_state.set_dark(self.tema_oscuro)
+        """
+        Aplica el tema actual a la Page y establece el fondo de la Page con tu paleta.
+        Esto evita que partes de la UI usen ‘surfaces’ por defecto y se inviertan.
+        """
         if not self.page:
             return
 
-        self.page.theme_mode = (
-            ft.ThemeMode.DARK if self.tema_oscuro else ft.ThemeMode.LIGHT
-        )
+        # 1) Modo de material (para controles que sí lo usan)
+        self.page.theme_mode = ft.ThemeMode.DARK if self.tema_oscuro else ft.ThemeMode.LIGHT
+
+        # 2) Color de fondo GLOBAL de la Page desde TU paleta
+        colors = self.get_colors()
+        try:
+            self.page.bgcolor = colors.get("BG_COLOR")
+        except Exception:
+            pass
+
         try:
             self.page.update()
-        except AssertionError:
-            pass
         except Exception:
             pass
 
@@ -107,8 +115,7 @@ class ThemeController:
                 "FG_COLOR": ft.colors.WHITE,
                 "AVATAR_ACCENT": ft.colors.GREY_800,
                 "DIVIDER_COLOR": ft.colors.OUTLINE_VARIANT,
-                "BTN_BG": ft.colors.GREY_700,
-                # reemplazamos GREY_850 por un tono seguro existente
+                "BTN_BG": ft.colors.GREY_800,
                 "CARD_BG": ft.colors.GREY_800,
             }
         else:
@@ -126,9 +133,7 @@ class ThemeController:
         return self.get_colors().get("FG_COLOR", ft.colors.BLACK)
 
     def is_dark(self) -> bool:
-        """True si el tema actual es oscuro."""
         return self.tema_oscuro
 
     def is_white(self) -> bool:
-        """True si el tema actual es claro."""
         return not self.tema_oscuro

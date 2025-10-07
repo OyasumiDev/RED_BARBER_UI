@@ -15,6 +15,7 @@ from app.core.enums.e_trabajadores import E_TRABAJADORES, E_TRAB_TIPO, E_TRAB_ES
 def _txt(v: Any) -> str:
     return "" if v is None else str(v)
 
+
 def _f2(v: Any) -> str:
     try:
         return f"{float(v):.2f}"
@@ -24,10 +25,14 @@ def _f2(v: Any) -> str:
 
 class TrabajadoresContainer(ft.Container):
     """
-    Módulo de trabajadores con integración de ThemeController.
-    Conserva toda la lógica CRUD y UI original.
+    Módulo de trabajadores alineado al ThemeController.
+    Mantiene tu lógica y UI original; sólo se aplican colores/estilos
+    desde el tema, y se actualiza en caliente si el tema cambia.
     """
 
+    # =========================================================
+    # Init
+    # =========================================================
     def __init__(self):
         super().__init__()
 
@@ -78,7 +83,7 @@ class TrabajadoresContainer(ft.Container):
             controls=[self.table_container, self.scroll_anchor],
         )
 
-        # ---------------- Botones de cabecera ----------------
+        # ---------------- Botones de cabecera (pill) ----------------
         def _btn(icon_name, text, on_click):
             return ft.GestureDetector(
                 on_tap=on_click,
@@ -88,8 +93,17 @@ class TrabajadoresContainer(ft.Container):
                     bgcolor=self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT),
                     content=ft.Row(
                         [
-                            ft.Icon(name=icon_name, size=18, color=self.colors.get("FG_COLOR")),
-                            ft.Text(text, size=12, weight="bold", color=self.colors.get("FG_COLOR")),
+                            ft.Icon(
+                                name=icon_name,
+                                size=18,
+                                color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+                            ),
+                            ft.Text(
+                                text,
+                                size=12,
+                                weight="bold",
+                                color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+                            ),
                         ],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=6,
@@ -97,8 +111,12 @@ class TrabajadoresContainer(ft.Container):
                 ),
             )
 
-        self.import_button = _btn(ft.icons.FILE_DOWNLOAD_OUTLINED, "Importar", lambda e: self._on_importar())
-        self.export_button = _btn(ft.icons.FILE_UPLOAD_OUTLINED, "Exportar", lambda e: self._on_exportar())
+        self.import_button = _btn(
+            ft.icons.FILE_DOWNLOAD_OUTLINED, "Importar", lambda e: self._on_importar()
+        )
+        self.export_button = _btn(
+            ft.icons.FILE_UPLOAD_OUTLINED, "Exportar", lambda e: self._on_exportar()
+        )
         self.add_button = _btn(ft.icons.ADD, "Agregar", lambda e: self._insertar_fila_nueva())
 
         # ---------------- Toolbar (filtros) ----------------
@@ -109,13 +127,13 @@ class TrabajadoresContainer(ft.Container):
             keyboard_type=ft.KeyboardType.NUMBER,
             on_submit=lambda e: self._aplicar_sort_id(),
             on_change=self._id_on_change_auto_reset,
-            bgcolor=self.colors.get("CARD_BG"),
-            color=self.colors.get("FG_COLOR"),
         )
+        self._apply_textfield_palette(self.sort_id_input)
+
         self.sort_id_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar ID",
-            icon_color=self.colors.get("FG_COLOR"),
+            icon_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
             on_click=lambda e: self._limpiar_sort_id(),
         )
 
@@ -125,13 +143,13 @@ class TrabajadoresContainer(ft.Container):
             width=260,
             on_submit=lambda e: self._aplicar_sort_nombre(),
             on_change=self._nombre_on_change_auto_reset,
-            bgcolor=self.colors.get("CARD_BG"),
-            color=self.colors.get("FG_COLOR"),
         )
+        self._apply_textfield_palette(self.sort_name_input)
+
         self.sort_name_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar nombre",
-            icon_color=self.colors.get("FG_COLOR"),
+            icon_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
             on_click=lambda e: self._limpiar_sort_nombre(),
         )
 
@@ -160,7 +178,7 @@ class TrabajadoresContainer(ft.Container):
                             self.sort_name_clear_btn,
                         ],
                     ),
-                    ft.Divider(color=self.colors.get("DIVIDER_COLOR")),
+                    ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)),
                     ft.Container(
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.only(top=10),
@@ -171,38 +189,70 @@ class TrabajadoresContainer(ft.Container):
             ),
         )
 
-        # 🔄 Suscripción a cambio de tema global
-        self.app_state.on_theme_change(self._on_theme_changed)
+        # 🔄 Suscripción a cambio de tema global (si AppState la expone)
+        cb = getattr(self.app_state, "on_theme_change", None)
+        if callable(cb):
+            cb(self._on_theme_changed)
 
         # Carga inicial
         self._actualizar_tabla()
 
-    # ---------------------- Reactividad de tema ----------------------
+    # =========================================================
+    # Utilidades de tema
+    # =========================================================
+    def _apply_textfield_palette(self, tf: ft.TextField):
+        """Aplica la paleta del tema a un TextField (labels, bordes, etc.)."""
+        tf.bgcolor = self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT)
+        tf.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        tf.label_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+        tf.hint_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+        tf.cursor_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        tf.border_color = self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)
+        tf.focused_border_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+
+    # =========================================================
+    # Reactividad de tema
+    # =========================================================
     def _on_theme_changed(self):
-        """Se invoca automáticamente al cambiar el tema global."""
+        """Invocado cuando ThemeController cambia de modo."""
         self.colors = self.theme_ctrl.get_colors()
         self._recolor_ui()
+        # Reconstruir tabla para aplicar colores a todas las celdas/headers
+        self._actualizar_tabla(self.fila_editando)
 
     def _recolor_ui(self):
-        """Actualiza dinámicamente colores de la UI."""
+        """Actualiza colores sin tocar la lógica."""
+        # Pills
         for btn in [self.import_button, self.export_button, self.add_button]:
             if isinstance(btn.content, ft.Container):
-                btn.content.bgcolor = self.colors.get("BTN_BG")
-                for ctrl in btn.content.content.controls:
-                    if isinstance(ctrl, ft.Icon):
-                        ctrl.color = self.colors.get("FG_COLOR")
-                    if isinstance(ctrl, ft.Text):
-                        ctrl.color = self.colors.get("FG_COLOR")
-        self.sort_id_input.bgcolor = self.colors.get("CARD_BG")
-        self.sort_name_input.bgcolor = self.colors.get("CARD_BG")
+                btn.content.bgcolor = self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT)
+                if isinstance(btn.content.content, ft.Row):
+                    for ctrl in btn.content.content.controls:
+                        if isinstance(ctrl, (ft.Icon, ft.Text)):
+                            ctrl.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+
+        # Inputs
+        self._apply_textfield_palette(self.sort_id_input)
+        self._apply_textfield_palette(self.sort_name_input)
+        self.sort_id_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        self.sort_name_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+
+        # Contenedores
+        self.bgcolor = self.colors.get("BG_COLOR")
         self.table_container.bgcolor = self.colors.get("BG_COLOR")
+        if isinstance(self.content, ft.Container):
+            self.content.bgcolor = self.colors.get("BG_COLOR")
+
+        # Page update seguro
         if self.page:
             try:
                 self.page.update()
             except Exception:
                 pass
 
-    # ----------------------------- Filtros / Orden -----------------------------
+    # =========================================================
+    # Filtros / Orden
+    # =========================================================
     def _aplicar_sort_id(self):
         v = (self.sort_id_input.value or "").strip()
         if v and not v.isdigit():
@@ -248,7 +298,9 @@ class TrabajadoresContainer(ft.Container):
             self.sort_name_filter = None
             self._actualizar_tabla()
 
-    # ----------------------------- Orden por columna -----------------------------
+    # =========================================================
+    # Orden por columna
+    # =========================================================
     def _icono_orden(self, columna: str) -> str:
         estado = self.orden_actual.get(columna)
         if estado == "asc":
@@ -275,19 +327,13 @@ class TrabajadoresContainer(ft.Container):
         if self.sort_id_filter:
             id_str = str(self.sort_id_filter)
             id_key = E_TRABAJADORES.ID.value
-            ordered = sorted(
-                ordered,
-                key=lambda r: 0 if str(r.get(id_key)) == id_str else 1
-            )
+            ordered = sorted(ordered, key=lambda r: 0 if str(r.get(id_key)) == id_str else 1)
 
         # Prioridad por nombre contiene
         if self.sort_name_filter:
             texto = self.sort_name_filter.lower()
             name_key = E_TRABAJADORES.NOMBRE.value
-            ordered = sorted(
-                ordered,
-                key=lambda r: 0 if texto in str(r.get(name_key, "")).lower() else 1
-            )
+            ordered = sorted(ordered, key=lambda r: 0 if texto in str(r.get(name_key, "")).lower() else 1)
 
         # Orden por columna (numérica o texto)
         if columna:
@@ -302,19 +348,16 @@ class TrabajadoresContainer(ft.Container):
 
         return ordered
 
-    # ----------------------------- Tabla y datos -----------------------------
+    # =========================================================
+    # Tabla y datos
+    # =========================================================
     def _actualizar_tabla(self, fila_en_edicion: Optional[int] = None):
-        # lee
         datos_result = self.model.listar() if hasattr(self.model, "listar") else []
         datos = datos_result if isinstance(datos_result, list) else datos_result.get("data", [])
 
-        # setea fila en edición si te lo piden
         self.fila_editando = fila_en_edicion
 
-        # ordena según filtros actuales
         datos = self._ordenar_lista(datos)
-
-        # pinta
         self._refrescar_tabla(datos)
 
     def _refrescar_tabla(self, trabajadores: list):
@@ -324,7 +367,9 @@ class TrabajadoresContainer(ft.Container):
         if self.page:
             self.page.update()
 
-    # ----------------------------- Build table -----------------------------
+    # =========================================================
+    # Build table
+    # =========================================================
     def _build_table(self, trabajadores: list) -> ft.DataTable:
         rows: List[ft.DataRow] = []
         ID = E_TRABAJADORES.ID.value
@@ -332,6 +377,8 @@ class TrabajadoresContainer(ft.Container):
         TIPO = E_TRABAJADORES.TIPO.value
         COMISION = E_TRABAJADORES.COMISION.value
         ESTADO = E_TRABAJADORES.ESTADO.value
+
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
         for r in trabajadores:
             rid = r.get(ID)
@@ -342,32 +389,39 @@ class TrabajadoresContainer(ft.Container):
                 nombre_tf = self._mk_tf_nombre(_txt(r.get(NOMBRE)))
                 nombre_cell = ft.DataCell(ft.Container(nombre_tf, width=300, expand=True))
             else:
-                nombre_cell = ft.DataCell(ft.Container(ft.Text(_txt(r.get(NOMBRE))), width=300, expand=True))
+                nombre_cell = ft.DataCell(
+                    ft.Container(ft.Text(_txt(r.get(NOMBRE)), color=fg), width=300, expand=True)
+                )
 
             # Tipo
             if en_edicion:
                 tipo_dd = self._mk_dd_tipo(r.get(TIPO, E_TRAB_TIPO.OCASIONAL.value))
                 tipo_cell = ft.DataCell(ft.Container(tipo_dd, width=140, expand=True))
             else:
-                tipo_cell = ft.DataCell(ft.Container(ft.Text(_txt(r.get(TIPO))), width=140, expand=True))
+                tipo_cell = ft.DataCell(
+                    ft.Container(ft.Text(_txt(r.get(TIPO)), color=fg), width=140, expand=True)
+                )
 
             # Comisión
             if en_edicion:
                 com_tf = self._mk_tf_comision(_f2(r.get(COMISION)))
                 com_cell = ft.DataCell(ft.Container(com_tf, width=120, expand=True))
             else:
-                com_cell = ft.DataCell(ft.Container(ft.Text(_f2(r.get(COMISION))), width=120, expand=True))
+                com_cell = ft.DataCell(
+                    ft.Container(ft.Text(_f2(r.get(COMISION)), color=fg), width=120, expand=True)
+                )
 
             # Estado
             if en_edicion:
                 est_dd = self._mk_dd_estado(r.get(ESTADO, E_TRAB_ESTADO.ACTIVO.value))
                 est_cell = ft.DataCell(ft.Container(est_dd, width=120, expand=True))
             else:
-                est_cell = ft.DataCell(ft.Container(ft.Text(_txt(r.get(ESTADO))), width=120, expand=True))
+                est_cell = ft.DataCell(
+                    ft.Container(ft.Text(_txt(r.get(ESTADO)), color=fg), width=120, expand=True)
+                )
 
             # Acciones
             if en_edicion:
-                # Guardar / Cancelar (CHECK / CLOSE)
                 acciones = ft.Row(
                     [
                         ft.IconButton(
@@ -378,43 +432,43 @@ class TrabajadoresContainer(ft.Container):
                                               _nombre=nombre_cell.content.content if isinstance(nombre_cell.content.content, ft.TextField) else None,
                                               _tipo=tipo_cell.content.content if isinstance(tipo_cell.content.content, ft.Dropdown) else None,
                                               _com=com_cell.content.content if isinstance(com_cell.content.content, ft.TextField) else None,
-                                              _est=est_cell.content.content if isinstance(est_cell.content.content, ft.Dropdown) else None:  # noqa
-                                self._guardar_edicion(_rid, _nombre, _tipo, _com, _est)
+                                              _est=est_cell.content.content if isinstance(est_cell.content.content, ft.Dropdown) else None:
+                                self._guardar_edicion(_rid, _nombre, _tipo, _com, _est),
                         ),
                         ft.IconButton(
                             icon=ft.icons.CLOSE,
                             icon_color=ft.colors.RED_600,
                             tooltip="Cancelar",
-                            on_click=lambda e, _rid=rid: self._cancelar_edicion(_rid)
+                            on_click=lambda e, _rid=rid: self._cancelar_edicion(_rid),
                         ),
                     ],
                     spacing=6,
-                    alignment=ft.MainAxisAlignment.START
+                    alignment=ft.MainAxisAlignment.START,
                 )
             else:
-                # Editar / Eliminar
                 acciones = ft.Row(
                     [
                         ft.IconButton(
                             icon=ft.icons.EDIT,
                             tooltip="Editar",
-                            on_click=lambda e, _rid=rid: self._activar_edicion(_rid)
+                            icon_color=fg,
+                            on_click=lambda e, _rid=rid: self._activar_edicion(_rid),
                         ),
                         ft.IconButton(
                             icon=ft.icons.DELETE_OUTLINE,
                             icon_color=ft.colors.RED_600,
                             tooltip="Eliminar",
-                            on_click=lambda e, _rid=rid: self._confirmar_eliminar(_rid)
+                            on_click=lambda e, _rid=rid: self._confirmar_eliminar(_rid),
                         ),
                     ],
                     spacing=6,
-                    alignment=ft.MainAxisAlignment.START
+                    alignment=ft.MainAxisAlignment.START,
                 )
 
             rows.append(
                 ft.DataRow(
                     cells=[
-                        ft.DataCell(ft.Text(_txt(rid))),
+                        ft.DataCell(ft.Text(_txt(rid), color=fg)),
                         nombre_cell,
                         tipo_cell,
                         com_cell,
@@ -424,39 +478,55 @@ class TrabajadoresContainer(ft.Container):
                 )
             )
 
-        # Encabezados con sort (como tu ejemplo)
+        # Encabezados con sort + fondo de tarjeta
         return ft.DataTable(
             expand=True,
+            bgcolor=self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT),
             columns=[
                 ft.DataColumn(
                     ft.Container(
-                        ft.Text(f"Nómina {self._icono_orden(E_TRABAJADORES.ID.value)}", size=12, weight="bold"),
+                        ft.Text(
+                            f"Nómina {self._icono_orden(E_TRABAJADORES.ID.value)}",
+                            size=12,
+                            weight="bold",
+                            color=fg,
+                        ),
                         width=100,
                         alignment=ft.alignment.center,
                     ),
                     on_sort=lambda _: self._ordenar_por_columna(E_TRABAJADORES.ID.value),
                 ),
                 ft.DataColumn(
-                    ft.Container(ft.Text("Nombre", size=12, weight="bold"), width=300)
+                    ft.Container(ft.Text("Nombre", size=12, weight="bold", color=fg), width=300)
                 ),
                 ft.DataColumn(
-                    ft.Container(ft.Text("Tipo", size=12, weight="bold"), width=140)
+                    ft.Container(ft.Text("Tipo", size=12, weight="bold", color=fg), width=140)
                 ),
                 ft.DataColumn(
-                    ft.Container(ft.Text(f"Comisión % {self._icono_orden(E_TRABAJADORES.COMISION.value)}", size=12, weight="bold"), width=120),
+                    ft.Container(
+                        ft.Text(
+                            f"Comisión % {self._icono_orden(E_TRABAJADORES.COMISION.value)}",
+                            size=12,
+                            weight="bold",
+                            color=fg,
+                        ),
+                        width=120,
+                    ),
                     on_sort=lambda _: self._ordenar_por_columna(E_TRABAJADORES.COMISION.value),
                 ),
                 ft.DataColumn(
-                    ft.Container(ft.Text("Estado", size=12, weight="bold"), width=120)
+                    ft.Container(ft.Text("Estado", size=12, weight="bold", color=fg), width=120)
                 ),
                 ft.DataColumn(
-                    ft.Container(ft.Text("Editar - Eliminar", size=12, weight="bold"), width=160)
+                    ft.Container(ft.Text("Editar - Eliminar", size=12, weight="bold", color=fg), width=160)
                 ),
             ],
             rows=rows,
         )
 
-    # ----------------------------- Inputs celdas -----------------------------
+    # =========================================================
+    # Inputs celdas
+    # =========================================================
     def _mk_tf_nombre(self, val: str) -> ft.TextField:
         tf = ft.TextField(
             value=val,
@@ -464,11 +534,13 @@ class TrabajadoresContainer(ft.Container):
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
         )
+        self._apply_textfield_palette(tf)
 
         def validar(_):
             ok = len(tf.value.strip()) >= 3 and all(c.isalpha() or c.isspace() for c in tf.value.strip())
             tf.border_color = None if ok else ft.colors.RED
-            self.page.update()
+            if self.page:
+                self.page.update()
 
         tf.on_change = validar
         return tf
@@ -481,6 +553,7 @@ class TrabajadoresContainer(ft.Container):
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
         )
+        self._apply_textfield_palette(tf)
 
         def validar(_):
             try:
@@ -488,7 +561,8 @@ class TrabajadoresContainer(ft.Container):
                 tf.border_color = None if v >= 0 else ft.colors.RED
             except Exception:
                 tf.border_color = ft.colors.RED
-            self.page.update()
+            if self.page:
+                self.page.update()
 
         tf.on_change = validar
         return tf
@@ -516,7 +590,9 @@ class TrabajadoresContainer(ft.Container):
             dense=True,
         )
 
-    # ----------------------------- Acciones fila existente -----------------------------
+    # =========================================================
+    # Acciones fila existente
+    # =========================================================
     def _activar_edicion(self, rid: int):
         self._actualizar_tabla(fila_en_edicion=rid)
 
@@ -524,8 +600,14 @@ class TrabajadoresContainer(ft.Container):
         self.fila_editando = None
         self._actualizar_tabla()
 
-    def _guardar_edicion(self, rid: int, tf_nombre: ft.TextField, dd_tipo: ft.Dropdown,
-                         tf_com: ft.TextField, dd_estado: ft.Dropdown):
+    def _guardar_edicion(
+        self,
+        rid: int,
+        tf_nombre: ft.TextField,
+        dd_tipo: ft.Dropdown,
+        tf_com: ft.TextField,
+        dd_estado: ft.Dropdown,
+    ):
         errores: List[str] = []
 
         nombre_val = (tf_nombre.value or "").strip()
@@ -542,7 +624,8 @@ class TrabajadoresContainer(ft.Container):
             tf_com.border_color = ft.colors.RED
             errores.append("Comisión inválida")
 
-        self.page.update()
+        if self.page:
+            self.page.update()
 
         if errores:
             self._snack_error("❌ " + " / ".join(errores))
@@ -562,11 +645,17 @@ class TrabajadoresContainer(ft.Container):
         else:
             self._snack_error(f"❌ No se pudo guardar: {res.get('message')}")
 
+    # =========================================================
+    # Eliminar
+    # =========================================================
     def _confirmar_eliminar(self, rid: int):
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("¿Eliminar trabajador?"),
-            content=ft.Text(f"Esta acción no se puede deshacer. ID: {rid}"),
+            title=ft.Text("¿Eliminar trabajador?", color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
+            content=ft.Text(
+                f"Esta acción no se puede deshacer. ID: {rid}",
+                color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+            ),
             actions=[
                 ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg)),
                 ft.ElevatedButton(
@@ -591,7 +680,9 @@ class TrabajadoresContainer(ft.Container):
         else:
             self._snack_error(f"❌ No se pudo eliminar: {res.get('message')}")
 
-    # ----------------------------- Fila NUEVA -----------------------------
+    # =========================================================
+    # Fila NUEVA
+    # =========================================================
     def _insertar_fila_nueva(self, _e=None):
         if self.fila_nueva_en_proceso:
             self._snack_ok("ℹ️ Ya hay un registro nuevo en proceso.")
@@ -600,17 +691,32 @@ class TrabajadoresContainer(ft.Container):
         self.fila_nueva_en_proceso = True
 
         # Inputs
-        nombre_input = ft.TextField(hint_text="Nombre completo", expand=True, text_size=12,
-                                    content_padding=ft.padding.symmetric(horizontal=8, vertical=6))
+        nombre_input = ft.TextField(
+            hint_text="Nombre completo",
+            expand=True,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+        )
+        self._apply_textfield_palette(nombre_input)
+
         tipo_input = self._mk_dd_tipo(E_TRAB_TIPO.OCASIONAL.value)
-        com_input = ft.TextField(hint_text="Comisión %", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12,
-                                 content_padding=ft.padding.symmetric(horizontal=8, vertical=6))
+
+        com_input = ft.TextField(
+            hint_text="Comisión %",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            expand=True,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+        )
+        self._apply_textfield_palette(com_input)
+
         estado_input = self._mk_dd_estado(E_TRAB_ESTADO.ACTIVO.value)
 
         def validar_nombre(_):
             val = nombre_input.value.strip()
             nombre_input.border_color = None if len(val) >= 3 and all(c.isalpha() or c.isspace() for c in val) else ft.colors.RED
-            self.page.update()
+            if self.page:
+                self.page.update()
 
         def validar_comision(_):
             try:
@@ -618,7 +724,8 @@ class TrabajadoresContainer(ft.Container):
                 com_input.border_color = None if v >= 0 else ft.colors.RED
             except Exception:
                 com_input.border_color = ft.colors.RED
-            self.page.update()
+            if self.page:
+                self.page.update()
 
         nombre_input.on_change = validar_nombre
         com_input.on_change = validar_comision
@@ -639,7 +746,8 @@ class TrabajadoresContainer(ft.Container):
                 com_input.border_color = ft.colors.RED
                 errores.append("Comisión inválida (número positivo)")
 
-            self.page.update()
+            if self.page:
+                self.page.update()
 
             if errores:
                 self._snack_error("❌ " + " / ".join(errores))
@@ -662,7 +770,6 @@ class TrabajadoresContainer(ft.Container):
 
         def on_cancelar(_):
             self.fila_nueva_en_proceso = False
-            # quita la última fila añadida (la nueva)
             try:
                 self.table.rows.pop()
             except Exception:
@@ -670,47 +777,73 @@ class TrabajadoresContainer(ft.Container):
             if self.page:
                 self.page.update()
 
-        nueva_fila = ft.DataRow(cells=[
-            ft.DataCell(ft.Text("-")),  # ID todavía no asignado
-            ft.DataCell(ft.Container(nombre_input, width=300, expand=True)),
-            ft.DataCell(ft.Container(tipo_input, width=140, expand=True)),
-            ft.DataCell(ft.Container(com_input, width=120, expand=True)),
-            ft.DataCell(ft.Container(estado_input, width=120, expand=True)),
-            ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, tooltip="Aceptar", on_click=on_guardar),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, tooltip="Cancelar", on_click=on_cancelar),
-            ], spacing=6)),
-        ])
+        nueva_fila = ft.DataRow(
+            cells=[
+                ft.DataCell(ft.Text("-")),
+                ft.DataCell(ft.Container(nombre_input, width=300, expand=True)),
+                ft.DataCell(ft.Container(tipo_input, width=140, expand=True)),
+                ft.DataCell(ft.Container(com_input, width=120, expand=True)),
+                ft.DataCell(ft.Container(estado_input, width=120, expand=True)),
+                ft.DataCell(
+                    ft.Row(
+                        [
+                            ft.IconButton(
+                                icon=ft.icons.CHECK,
+                                icon_color=ft.colors.GREEN_600,
+                                tooltip="Aceptar",
+                                on_click=on_guardar,
+                            ),
+                            ft.IconButton(
+                                icon=ft.icons.CLOSE,
+                                icon_color=ft.colors.RED_600,
+                                tooltip="Cancelar",
+                                on_click=on_cancelar,
+                            ),
+                        ],
+                        spacing=6,
+                    )
+                ),
+            ]
+        )
 
-        # Inserta la fila nueva al final de la tabla actual
         if self.table is None:
             self._actualizar_tabla()
-        if self.table:  # seguridad
+        if self.table:
             self.table.rows.append(nueva_fila)
         if self.page:
             self.page.update()
 
-        # focus inicial
         nombre_input.focus()
 
-    # ----------------------------- Import / Export (placeholder) -----------------------------
+    # =========================================================
+    # Import / Export (placeholder)
+    # =========================================================
     def _on_importar(self):
         self._snack_ok("ℹ️ Importar: pendiente de implementación.")
 
     def _on_exportar(self):
         self._snack_ok("ℹ️ Exportar: pendiente de implementación.")
 
-    # ----------------------------- Notificaciones -----------------------------
+    # =========================================================
+    # Notificaciones
+    # =========================================================
     def _snack_ok(self, msg: str):
         if not self.page:
             return
-        self.page.snack_bar = ft.SnackBar(ft.Text(msg))
+        # Usamos FG_COLOR y CARD_BG para integrarlo al tema
+        self.page.snack_bar = ft.SnackBar(
+            ft.Text(msg, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
+            bgcolor=self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT),
+        )
         self.page.snack_bar.open = True
         self.page.update()
 
     def _snack_error(self, msg: str):
         if not self.page:
             return
-        self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=ft.colors.RED_200)
+        self.page.snack_bar = ft.SnackBar(
+            ft.Text(msg, color=ft.colors.WHITE),
+            bgcolor=ft.colors.RED_600,
+        )
         self.page.snack_bar.open = True
         self.page.update()

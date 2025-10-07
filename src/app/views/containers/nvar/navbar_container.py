@@ -1,3 +1,4 @@
+# app/views/containers/nvar/navbar_container.py
 import flet as ft
 from app.views.containers.nvar.menu_buttons_area import MenuButtonsArea
 from app.views.containers.nvar.user_icon_area import UserIconArea
@@ -31,14 +32,15 @@ class NavBarContainer(ft.Container):
         self.expanded = self.layout_ctrl.is_expanded()
         self.dark = self.theme_ctrl.is_dark()
 
-        # Flag de montaje para evitar AssertionError al updatear
+        # Flags
         self._mounted = False
+        self._theme_listener = None  # guardamos callback para evitar múltiples suscripciones
 
         # Construcción inicial
         self._build()
 
-        # Escucha global del cambio de tema (para actualizar colores automáticamente)
-        self.theme_ctrl.app_state.on_theme_change(self._on_theme_changed)
+        # Suscripción a cambios de tema (una sola vez)
+        self._register_theme_listener()
 
     # --------------------
     # Ciclo de vida
@@ -46,25 +48,42 @@ class NavBarContainer(ft.Container):
     def did_mount(self):
         """Se llama automáticamente cuando el control se monta en la Page."""
         self._mounted = True
-        try:
-            self.theme_ctrl.apply_theme()
-        except Exception:
-            pass
+        self._apply_current_palette()
         self._safe_update()
 
     def will_unmount(self):
         """Se llama automáticamente al desmontarse del árbol."""
         self._mounted = False
-        self.theme_ctrl.app_state.off_theme_change(self._on_theme_changed)
+        self._unregister_theme_listener()
 
-    def _safe_update(self):
-        """Actualiza la Page solo si ya está montado."""
-        p = getattr(self, "page", None)
-        if p is not None:
-            try:
-                p.update()
-            except AssertionError:
-                pass
+    # --------------------
+    # Listeners de tema
+    # --------------------
+    def _register_theme_listener(self):
+        """
+        Registra el callback en AppState si existe y no se ha registrado aún.
+        Evita listeners duplicados si la navbar se reconstruye por ruteo.
+        """
+        if self._theme_listener is not None:
+            return  # ya está
+        cb = self._on_theme_changed
+        # on_theme_change debe aceptar un call-able; si AppState devuelve un id úsalo si lo tienes.
+        try:
+            self.app_state.on_theme_change(cb)
+            self._theme_listener = cb
+        except Exception:
+            # Si tu AppState no implementa esto, no fallamos.
+            self._theme_listener = None
+
+    def _unregister_theme_listener(self):
+        if self._theme_listener is None:
+            return
+        try:
+            # off_theme_change debe aceptar el mismo callable
+            self.app_state.off_theme_change(self._theme_listener)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        self._theme_listener = None
 
     # --------------------
     # Build visual
@@ -144,9 +163,16 @@ class NavBarContainer(ft.Container):
     # --------------------
     # Eventos de tema
     # --------------------
+    def _apply_current_palette(self):
+        """Aplica el fondo actual de la paleta y sincroniza bandera dark."""
+        colors = self.theme_ctrl.get_colors()
+        self.dark = self.theme_ctrl.is_dark()
+        self.bgcolor = colors.get("BG_COLOR", self.bgcolor)
+
     def _on_theme_changed(self):
         """Callback llamado por AppState cuando cambia el tema global."""
-        self.dark = self.theme_ctrl.is_dark()
+        # Relee paleta y reconstruye con los colores correctos
+        self._apply_current_palette()
         self._build()
         self._safe_update()
 
@@ -161,22 +187,19 @@ class NavBarContainer(ft.Container):
         self._safe_update()
 
     def toggle_theme(self, e=None):
-        """Alterna el tema y lo propaga globalmente."""
+        """
+        Alterna el tema global.
+        NOTA: no forzamos rebuild aquí; el listener _on_theme_changed lo hará,
+        evitando condiciones de carrera y actualizaciones dobles.
+        """
         self.theme_ctrl.toggle()
-        self.dark = self.theme_ctrl.is_dark()
-        try:
-            self.theme_ctrl.apply_theme()
-        except Exception:
-            pass
-        self._build()
-        self._safe_update()
 
     def exit_app(self, e=None):
         """Cierra sesión y la ventana principal."""
         page = self.app_state.page
         if not page:
             return
-        # Limpia sesión y restablece estados
+        # Limpia sesión
         try:
             page.client_storage.remove("app.user")
         except Exception:
@@ -188,8 +211,24 @@ class NavBarContainer(ft.Container):
         except Exception:
             pass
 
-        # Cierra la app
         try:
             page.window_close()
         except Exception:
             pass
+
+    # --------------------
+    # Utilidades
+    # --------------------
+    def _safe_update(self):
+        """
+        Actualiza de forma segura: solo cuando el control ya fue agregado a la Page.
+        Evitamos forzar page.update() desde aquí para no provocar renders globales.
+        """
+        if getattr(self, "page", None) is None:
+            return
+        try:
+            self.update()
+        except AssertionError:
+            # Si por alguna razón aún no está montado, no forzamos nada.
+            pass
+
