@@ -10,11 +10,22 @@ from app.config.application.theme_controller import ThemeController
 from app.models.trabajadores_model import TrabajadoresModel
 from app.core.enums.e_trabajadores import E_TRABAJADORES, E_TRAB_TIPO, E_TRAB_ESTADO
 
+# TableBuilder + SortManager + (opcional) Scroll controller
+from app.ui.builders.table_builder import TableBuilder
+from app.ui.sorting.sort_manager import SortManager
+try:
+    from app.ui.scroll.table_scroll_controller import ScrollTableController
+except Exception:
+    ScrollTableController = None  # opcional
+
+# BotonFactory (para acciones en modo edición/nuevo)
+from app.ui.factory.boton_factory import (
+    boton_aceptar, boton_cancelar, boton_editar, boton_borrar
+)
 
 # ----------------------------- Helpers -----------------------------
 def _txt(v: Any) -> str:
     return "" if v is None else str(v)
-
 
 def _f2(v: Any) -> str:
     try:
@@ -25,9 +36,12 @@ def _f2(v: Any) -> str:
 
 class TrabajadoresContainer(ft.Container):
     """
-    Módulo de trabajadores alineado al ThemeController.
-    Mantiene tu lógica y UI original; sólo se aplican colores/estilos
-    desde el tema, y se actualiza en caliente si el tema cambia.
+    Módulo de trabajadores (Flet 0.23) integrado con TableBuilder v2.
+    - Mantiene filtros por ID y Nombre (priorizados).
+    - Ordenamiento por encabezado (SortManager).
+    - Edición en línea y alta de nuevos registros.
+    - Eliminar con confirmación.
+    - Reactivo al ThemeController (colores se re-aplican al vuelo).
     """
 
     # =========================================================
@@ -49,7 +63,7 @@ class TrabajadoresContainer(ft.Container):
         # Filtros/orden
         self.sort_id_filter: Optional[str] = None
         self.sort_name_filter: Optional[str] = None
-        self.orden_actual = {
+        self.orden_actual: Dict[str, Optional[str]] = {
             E_TRABAJADORES.ID.value: None,
             E_TRABAJADORES.NOMBRE.value: None,
             E_TRABAJADORES.TIPO.value: None,
@@ -57,11 +71,14 @@ class TrabajadoresContainer(ft.Container):
             E_TRABAJADORES.ESTADO.value: None,
         }
 
+        # Refs de controles de edición/nuevo (por fila)
+        self._edit_controls: Dict[int, Dict[str, ft.Control]] = {}
+        self._new_controls: Dict[str, ft.Control] = {}
+
         # Modelo
         self.model = TrabajadoresModel()
 
-        # Tabla y scroll
-        self.table: Optional[ft.DataTable] = None
+        # ---------- Layout base / contenedores ----------
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
@@ -189,19 +206,62 @@ class TrabajadoresContainer(ft.Container):
             ),
         )
 
-        # 🔄 Suscripción a cambio de tema global (si AppState la expone)
+        # ---------- TableBuilder + SortManager ----------
+        self.sort_manager = SortManager()
+        self.ID = E_TRABAJADORES.ID.value
+        self.NOMBRE = E_TRABAJADORES.NOMBRE.value
+        self.TIPO = E_TRABAJADORES.TIPO.value
+        self.COMISION = E_TRABAJADORES.COMISION.value
+        self.ESTADO = E_TRABAJADORES.ESTADO.value
+
+        columns = [
+            {"key": self.ID, "title": "Nómina", "width": 100, "align": "center", "formatter": self._fmt_id},
+            {"key": self.NOMBRE, "title": "Nombre", "width": 300, "align": "start", "formatter": self._fmt_nombre},
+            {"key": self.TIPO, "title": "Tipo", "width": 140, "align": "start", "formatter": self._fmt_tipo},
+            {"key": self.COMISION, "title": "Comisión %", "width": 120, "align": "end", "formatter": self._fmt_comision},
+            {"key": self.ESTADO, "title": "Estado", "width": 120, "align": "start", "formatter": self._fmt_estado},
+        ]
+
+        self.table_builder = TableBuilder(
+            group="trabajadores",
+            sort_manager=self.sort_manager,
+            columns=columns,
+            on_sort_change=self._on_sort_change,   # click en headers
+            on_accept=self._on_accept_row,         # aceptar (nuevo o edición si usamos actions_builder)
+            on_cancel=self._on_cancel_row,         # cancelar (nuevo o edición)
+            on_edit=self._on_edit_row,             # click editar normal
+            on_delete=self._on_delete_row,         # click borrar
+            id_key=self.ID,
+            dense_text=True,
+            auto_scroll_new=True,
+            actions_title="Acciones",
+        )
+
+        # Actions personalizadas: aceptar/cancelar cuando está en edición
+        self.table_builder.attach_actions_builder(self._actions_builder)
+
+        # Scroll controller (opcional, si tu helper existe)
+        if ScrollTableController:
+            try:
+                self.stc = ScrollTableController()  # si requiere args, ajusta aquí
+                self.table_builder.attach_scroll_controller(self.stc)
+            except Exception:
+                self.stc = None
+        else:
+            self.stc = None
+
+        # Render inicial
+        self._refrescar_dataset()
+
+        # 🔄 Suscripción a cambio de tema
         cb = getattr(self.app_state, "on_theme_change", None)
         if callable(cb):
             cb(self._on_theme_changed)
 
-        # Carga inicial
-        self._actualizar_tabla()
-
     # =========================================================
-    # Utilidades de tema
+    # Theme
     # =========================================================
     def _apply_textfield_palette(self, tf: ft.TextField):
-        """Aplica la paleta del tema a un TextField (labels, bordes, etc.)."""
         tf.bgcolor = self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT)
         tf.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         tf.label_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
@@ -210,19 +270,13 @@ class TrabajadoresContainer(ft.Container):
         tf.border_color = self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)
         tf.focused_border_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
-    # =========================================================
-    # Reactividad de tema
-    # =========================================================
     def _on_theme_changed(self):
-        """Invocado cuando ThemeController cambia de modo."""
+        """Reaplica colores en UI y re-renderiza la tabla."""
         self.colors = self.theme_ctrl.get_colors()
         self._recolor_ui()
-        # Reconstruir tabla para aplicar colores a todas las celdas/headers
-        self._actualizar_tabla(self.fila_editando)
+        self._refrescar_dataset()
 
     def _recolor_ui(self):
-        """Actualiza colores sin tocar la lógica."""
-        # Pills
         for btn in [self.import_button, self.export_button, self.add_button]:
             if isinstance(btn.content, ft.Container):
                 btn.content.bgcolor = self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT)
@@ -231,19 +285,16 @@ class TrabajadoresContainer(ft.Container):
                         if isinstance(ctrl, (ft.Icon, ft.Text)):
                             ctrl.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
-        # Inputs
         self._apply_textfield_palette(self.sort_id_input)
         self._apply_textfield_palette(self.sort_name_input)
         self.sort_id_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         self.sort_name_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
-        # Contenedores
         self.bgcolor = self.colors.get("BG_COLOR")
         self.table_container.bgcolor = self.colors.get("BG_COLOR")
         if isinstance(self.content, ft.Container):
             self.content.bgcolor = self.colors.get("BG_COLOR")
 
-        # Page update seguro
         if self.page:
             try:
                 self.page.update()
@@ -251,7 +302,7 @@ class TrabajadoresContainer(ft.Container):
                 pass
 
     # =========================================================
-    # Filtros / Orden
+    # Filtros
     # =========================================================
     def _aplicar_sort_id(self):
         v = (self.sort_id_input.value or "").strip()
@@ -259,391 +310,335 @@ class TrabajadoresContainer(ft.Container):
             self._snack_error("❌ ID inválido. Usa solo números.")
             return
         self.sort_id_filter = v if v else None
-        self._actualizar_tabla()
+        self._refrescar_dataset()
 
     def _limpiar_sort_id(self):
         self.sort_id_input.value = ""
         self.sort_id_filter = None
-        self._actualizar_tabla()
+        self._refrescar_dataset()
 
     def _id_on_change_auto_reset(self, e: ft.ControlEvent):
         if (e.control.value or "").strip() == "" and self.sort_id_filter is not None:
             self.sort_id_filter = None
-            self._actualizar_tabla()
+            self._refrescar_dataset()
 
     def _aplicar_sort_nombre(self):
         texto = (self.sort_name_input.value or "").strip()
-        if not texto:
-            self.sort_name_filter = None
-            self._actualizar_tabla()
-            return
-
-        res = self.model.listar()
-        data = res if isinstance(res, list) else res.get("data", [])
-        hay = any(texto.lower() in (str(r.get(E_TRABAJADORES.NOMBRE.value, "")).lower()) for r in data)
-        if not hay:
-            self._snack_error("esta busqueda no esta disponible")
-            return
-
-        self.sort_name_filter = texto
-        self._actualizar_tabla()
+        self.sort_name_filter = texto if texto else None
+        self._refrescar_dataset()
 
     def _limpiar_sort_nombre(self):
         self.sort_name_input.value = ""
         self.sort_name_filter = None
-        self._actualizar_tabla()
+        self._refrescar_dataset()
 
     def _nombre_on_change_auto_reset(self, e: ft.ControlEvent):
         if (e.control.value or "").strip() == "" and self.sort_name_filter is not None:
             self.sort_name_filter = None
-            self._actualizar_tabla()
+            self._refrescar_dataset()
 
     # =========================================================
-    # Orden por columna
+    # Orden por encabezado (SortManager -> callback)
     # =========================================================
-    def _icono_orden(self, columna: str) -> str:
-        estado = self.orden_actual.get(columna)
-        if estado == "asc":
-            return "▲"
-        if estado == "desc":
-            return "▼"
-        return "⇅"
-
-    def _ordenar_por_columna(self, columna: str):
-        ascendente = self.orden_actual.get(columna) != "asc"
-        # limpiar estado
+    def _on_sort_change(self, campo: str, grupo: Optional[str] = None, asc: Optional[bool] = None, *_, **__):
+        # Toggle simple ASC/DESC en self.orden_actual
+        prev = self.orden_actual.get(campo)
+        nuevo = "desc" if prev == "asc" else "asc"
         self.orden_actual = {k: None for k in self.orden_actual}
-        self.orden_actual[columna] = "asc" if ascendente else "desc"
+        self.orden_actual[campo] = nuevo
+        self._refrescar_dataset()
 
-        datos_result = self.model.listar()
-        datos = datos_result if isinstance(datos_result, list) else datos_result.get("data", [])
-        datos = self._ordenar_lista(datos, columna=columna, asc=ascendente)
-        self._refrescar_tabla(datos)
-
-    def _ordenar_lista(self, datos: list, columna: Optional[str] = None, asc: bool = True) -> list:
+    def _aplicar_prioridades_y_orden(self, datos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ordered = list(datos)
 
         # Prioridad por ID exacto
         if self.sort_id_filter:
             id_str = str(self.sort_id_filter)
-            id_key = E_TRABAJADORES.ID.value
+            id_key = self.ID
             ordered = sorted(ordered, key=lambda r: 0 if str(r.get(id_key)) == id_str else 1)
 
         # Prioridad por nombre contiene
         if self.sort_name_filter:
             texto = self.sort_name_filter.lower()
-            name_key = E_TRABAJADORES.NOMBRE.value
+            name_key = self.NOMBRE
             ordered = sorted(ordered, key=lambda r: 0 if texto in str(r.get(name_key, "")).lower() else 1)
 
-        # Orden por columna (numérica o texto)
-        if columna:
-            keyfn = lambda x: (x.get(columna) if x.get(columna) is not None else "")
-            if columna in (E_TRABAJADORES.ID.value, E_TRABAJADORES.COMISION.value):
-                def keyfn(x):
+        # Orden por columna activa
+        col_activa = next((k for k, v in self.orden_actual.items() if v), None)
+        if col_activa:
+            asc = self.orden_actual[col_activa] == "asc"
+            def keyfn(x):
+                val = x.get(col_activa)
+                if col_activa in (self.ID, self.COMISION):
                     try:
-                        return float(x.get(columna) or 0)
+                        return float(val or 0)
                     except Exception:
                         return 0.0
+                return (val or "")
             ordered.sort(key=keyfn, reverse=not asc)
 
         return ordered
 
     # =========================================================
-    # Tabla y datos
+    # Dataset / Render
     # =========================================================
-    def _actualizar_tabla(self, fila_en_edicion: Optional[int] = None):
+    def _fetch(self) -> List[Dict[str, Any]]:
         datos_result = self.model.listar() if hasattr(self.model, "listar") else []
-        datos = datos_result if isinstance(datos_result, list) else datos_result.get("data", [])
+        return datos_result if isinstance(datos_result, list) else (datos_result.get("data", []) or [])
 
-        self.fila_editando = fila_en_edicion
-
-        datos = self._ordenar_lista(datos)
-        self._refrescar_tabla(datos)
-
-    def _refrescar_tabla(self, trabajadores: list):
-        self.table = self._build_table(trabajadores)
-        self.table_container.content.controls.clear()
-        self.table_container.content.controls.append(self.table)
+    def _refrescar_dataset(self):
+        datos = self._aplicar_prioridades_y_orden(self._fetch())
+        # Monta TableBuilder en UI si aún no
+        if not self.table_container.content.controls:
+            self.table_container.content.controls.append(self.table_builder.build())
+        # Aplica filas
+        self.table_builder.set_rows(datos)
         if self.page:
             self.page.update()
 
     # =========================================================
-    # Build table
+    # Formatters por columna (inline edit / view)
     # =========================================================
-    def _build_table(self, trabajadores: list) -> ft.DataTable:
-        rows: List[ft.DataRow] = []
-        ID = E_TRABAJADORES.ID.value
-        NOMBRE = E_TRABAJADORES.NOMBRE.value
-        TIPO = E_TRABAJADORES.TIPO.value
-        COMISION = E_TRABAJADORES.COMISION.value
-        ESTADO = E_TRABAJADORES.ESTADO.value
-
+    def _fmt_id(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        return ft.Text(_txt(value), size=12, color=fg)
 
-        for r in trabajadores:
-            rid = r.get(ID)
-            en_edicion = (self.fila_editando == rid)
+    def _fmt_nombre(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        rid = row.get(self.ID)
+        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        if not en_edicion:
+            return ft.Text(_txt(value), size=12, color=fg)
 
-            # Nombre
-            if en_edicion:
-                nombre_tf = self._mk_tf_nombre(_txt(r.get(NOMBRE)))
-                nombre_cell = ft.DataCell(ft.Container(nombre_tf, width=300, expand=True))
-            else:
-                nombre_cell = ft.DataCell(
-                    ft.Container(ft.Text(_txt(r.get(NOMBRE)), color=fg), width=300, expand=True)
-                )
-
-            # Tipo
-            if en_edicion:
-                tipo_dd = self._mk_dd_tipo(r.get(TIPO, E_TRAB_TIPO.OCASIONAL.value))
-                tipo_cell = ft.DataCell(ft.Container(tipo_dd, width=140, expand=True))
-            else:
-                tipo_cell = ft.DataCell(
-                    ft.Container(ft.Text(_txt(r.get(TIPO)), color=fg), width=140, expand=True)
-                )
-
-            # Comisión
-            if en_edicion:
-                com_tf = self._mk_tf_comision(_f2(r.get(COMISION)))
-                com_cell = ft.DataCell(ft.Container(com_tf, width=120, expand=True))
-            else:
-                com_cell = ft.DataCell(
-                    ft.Container(ft.Text(_f2(r.get(COMISION)), color=fg), width=120, expand=True)
-                )
-
-            # Estado
-            if en_edicion:
-                est_dd = self._mk_dd_estado(r.get(ESTADO, E_TRAB_ESTADO.ACTIVO.value))
-                est_cell = ft.DataCell(ft.Container(est_dd, width=120, expand=True))
-            else:
-                est_cell = ft.DataCell(
-                    ft.Container(ft.Text(_txt(r.get(ESTADO)), color=fg), width=120, expand=True)
-                )
-
-            # Acciones
-            if en_edicion:
-                acciones = ft.Row(
-                    [
-                        ft.IconButton(
-                            icon=ft.icons.CHECK,
-                            icon_color=ft.colors.GREEN_600,
-                            tooltip="Guardar",
-                            on_click=lambda e, _rid=rid,
-                                              _nombre=nombre_cell.content.content if isinstance(nombre_cell.content.content, ft.TextField) else None,
-                                              _tipo=tipo_cell.content.content if isinstance(tipo_cell.content.content, ft.Dropdown) else None,
-                                              _com=com_cell.content.content if isinstance(com_cell.content.content, ft.TextField) else None,
-                                              _est=est_cell.content.content if isinstance(est_cell.content.content, ft.Dropdown) else None:
-                                self._guardar_edicion(_rid, _nombre, _tipo, _com, _est),
-                        ),
-                        ft.IconButton(
-                            icon=ft.icons.CLOSE,
-                            icon_color=ft.colors.RED_600,
-                            tooltip="Cancelar",
-                            on_click=lambda e, _rid=rid: self._cancelar_edicion(_rid),
-                        ),
-                    ],
-                    spacing=6,
-                    alignment=ft.MainAxisAlignment.START,
-                )
-            else:
-                acciones = ft.Row(
-                    [
-                        ft.IconButton(
-                            icon=ft.icons.EDIT,
-                            tooltip="Editar",
-                            icon_color=fg,
-                            on_click=lambda e, _rid=rid: self._activar_edicion(_rid),
-                        ),
-                        ft.IconButton(
-                            icon=ft.icons.DELETE_OUTLINE,
-                            icon_color=ft.colors.RED_600,
-                            tooltip="Eliminar",
-                            on_click=lambda e, _rid=rid: self._confirmar_eliminar(_rid),
-                        ),
-                    ],
-                    spacing=6,
-                    alignment=ft.MainAxisAlignment.START,
-                )
-
-            rows.append(
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text(_txt(rid), color=fg)),
-                        nombre_cell,
-                        tipo_cell,
-                        com_cell,
-                        est_cell,
-                        ft.DataCell(acciones),
-                    ]
-                )
-            )
-
-        # Encabezados con sort + fondo de tarjeta
-        return ft.DataTable(
-            expand=True,
-            bgcolor=self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT),
-            columns=[
-                ft.DataColumn(
-                    ft.Container(
-                        ft.Text(
-                            f"Nómina {self._icono_orden(E_TRABAJADORES.ID.value)}",
-                            size=12,
-                            weight="bold",
-                            color=fg,
-                        ),
-                        width=100,
-                        alignment=ft.alignment.center,
-                    ),
-                    on_sort=lambda _: self._ordenar_por_columna(E_TRABAJADORES.ID.value),
-                ),
-                ft.DataColumn(
-                    ft.Container(ft.Text("Nombre", size=12, weight="bold", color=fg), width=300)
-                ),
-                ft.DataColumn(
-                    ft.Container(ft.Text("Tipo", size=12, weight="bold", color=fg), width=140)
-                ),
-                ft.DataColumn(
-                    ft.Container(
-                        ft.Text(
-                            f"Comisión % {self._icono_orden(E_TRABAJADORES.COMISION.value)}",
-                            size=12,
-                            weight="bold",
-                            color=fg,
-                        ),
-                        width=120,
-                    ),
-                    on_sort=lambda _: self._ordenar_por_columna(E_TRABAJADORES.COMISION.value),
-                ),
-                ft.DataColumn(
-                    ft.Container(ft.Text("Estado", size=12, weight="bold", color=fg), width=120)
-                ),
-                ft.DataColumn(
-                    ft.Container(ft.Text("Editar - Eliminar", size=12, weight="bold", color=fg), width=160)
-                ),
-            ],
-            rows=rows,
-        )
-
-    # =========================================================
-    # Inputs celdas
-    # =========================================================
-    def _mk_tf_nombre(self, val: str) -> ft.TextField:
         tf = ft.TextField(
-            value=val,
-            expand=True,
+            value=_txt(value),
+            hint_text="Nombre completo",
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
         )
         self._apply_textfield_palette(tf)
-
         def validar(_):
-            ok = len(tf.value.strip()) >= 3 and all(c.isalpha() or c.isspace() for c in tf.value.strip())
+            v = (tf.value or "").strip()
+            ok = len(v) >= 3 and all(c.isalpha() or c.isspace() for c in v)
             tf.border_color = None if ok else ft.colors.RED
-            if self.page:
-                self.page.update()
-
+            if self.page: self.page.update()
         tf.on_change = validar
+
+        # guardar ref
+        key = rid if rid is not None else -1
+        self._ensure_edit_map(key)
+        self._edit_controls[key]["nombre"] = tf
         return tf
 
-    def _mk_tf_comision(self, val: str) -> ft.TextField:
-        tf = ft.TextField(
-            value=str(val),
-            keyboard_type=ft.KeyboardType.NUMBER,
-            expand=True,
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-        )
-        self._apply_textfield_palette(tf)
+    def _fmt_tipo(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        rid = row.get(self.ID)
+        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        if not en_edicion:
+            return ft.Text(_txt(value), size=12, color=fg)
 
-        def validar(_):
-            try:
-                v = float(tf.value)
-                tf.border_color = None if v >= 0 else ft.colors.RED
-            except Exception:
-                tf.border_color = ft.colors.RED
-            if self.page:
-                self.page.update()
-
-        tf.on_change = validar
-        return tf
-
-    def _mk_dd_tipo(self, value: str) -> ft.Dropdown:
-        return ft.Dropdown(
+        dd = ft.Dropdown(
             value=value or E_TRAB_TIPO.OCASIONAL.value,
             options=[
                 ft.dropdown.Option(E_TRAB_TIPO.OCASIONAL.value, "ocasional"),
                 ft.dropdown.Option(E_TRAB_TIPO.PLANTA.value, "planta"),
                 ft.dropdown.Option(E_TRAB_TIPO.DUENO.value, "dueno"),
             ],
-            width=140,
             dense=True,
+            width=140,
         )
+        key = rid if rid is not None else -1
+        self._ensure_edit_map(key)
+        self._edit_controls[key]["tipo"] = dd
+        return dd
 
-    def _mk_dd_estado(self, value: str) -> ft.Dropdown:
-        return ft.Dropdown(
+    def _fmt_comision(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        rid = row.get(self.ID)
+        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        if not en_edicion:
+            return ft.Text(_f2(value), size=12, color=fg)
+
+        tf = ft.TextField(
+            value=_f2(value) if value is not None and not row.get("_is_new") else "",
+            hint_text="Comisión %",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+        )
+        self._apply_textfield_palette(tf)
+        def validar(_):
+            try:
+                v = float(tf.value)
+                tf.border_color = None if v >= 0 else ft.colors.RED
+            except Exception:
+                tf.border_color = ft.colors.RED
+            if self.page: self.page.update()
+        tf.on_change = validar
+
+        key = rid if rid is not None else -1
+        self._ensure_edit_map(key)
+        self._edit_controls[key]["comision"] = tf
+        return tf
+
+    def _fmt_estado(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        rid = row.get(self.ID)
+        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        if not en_edicion:
+            return ft.Text(_txt(value), size=12, color=fg)
+
+        dd = ft.Dropdown(
             value=value or E_TRAB_ESTADO.ACTIVO.value,
             options=[
                 ft.dropdown.Option(E_TRAB_ESTADO.ACTIVO.value, "activo"),
                 ft.dropdown.Option(E_TRAB_ESTADO.INACTIVO.value, "inactivo"),
             ],
-            width=120,
             dense=True,
+            width=120,
+        )
+        key = rid if rid is not None else -1
+        self._ensure_edit_map(key)
+        self._edit_controls[key]["estado"] = dd
+        return dd
+
+    def _ensure_edit_map(self, key: int):
+        if key not in self._edit_controls:
+            self._edit_controls[key] = {}
+
+    # =========================================================
+    # Actions builder (iconos por fila)
+    # =========================================================
+    def _actions_builder(self, row: Dict[str, Any], is_new: bool) -> ft.Control:
+        rid = row.get(self.ID)
+
+        # Fila NUEVA (aceptar/cancelar -> crear)
+        if is_new:
+            return ft.Row(
+                [
+                    boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
+                    boton_cancelar(lambda e, r=row: self._on_cancel_row(r)),
+                ],
+                spacing=8, alignment=ft.MainAxisAlignment.START
+            )
+
+        # Fila en EDICIÓN (aceptar/cancelar -> actualizar)
+        if self.fila_editando == rid:
+            return ft.Row(
+                [
+                    boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
+                    boton_cancelar(lambda e, r=row: self._on_cancel_row(r)),
+                ],
+                spacing=8, alignment=ft.MainAxisAlignment.START
+            )
+
+        # Fila NORMAL (editar/borrar)
+        return ft.Row(
+            [
+                boton_editar(lambda e, r=row: self._on_edit_row(r)),
+                boton_borrar(lambda e, r=row: self._on_delete_row(r)),
+            ],
+            spacing=8, alignment=ft.MainAxisAlignment.START
         )
 
     # =========================================================
-    # Acciones fila existente
+    # Callbacks de acciones
     # =========================================================
-    def _activar_edicion(self, rid: int):
-        self._actualizar_tabla(fila_en_edicion=rid)
+    def _on_edit_row(self, row: Dict[str, Any]):
+        self.fila_editando = row.get(self.ID)
+        self._edit_controls.pop(self.fila_editando if self.fila_editando is not None else -1, None)
+        self._refrescar_dataset()
 
-    def _cancelar_edicion(self, rid: int):
-        self.fila_editando = None
-        self._actualizar_tabla()
+    def _on_delete_row(self, row: Dict[str, Any]):
+        rid = int(row.get(self.ID))
+        self._confirmar_eliminar(rid)
 
-    def _guardar_edicion(
-        self,
-        rid: int,
-        tf_nombre: ft.TextField,
-        dd_tipo: ft.Dropdown,
-        tf_com: ft.TextField,
-        dd_estado: ft.Dropdown,
-    ):
-        errores: List[str] = []
+    def _on_accept_row(self, row: Dict[str, Any]):
+        # Detecta si es nueva o edición
+        is_new = bool(row.get("_is_new")) or (row.get(self.ID) in (None, "", 0))
+        key = (row.get(self.ID) if not is_new else -1)
+        ctrls = self._edit_controls.get(key, {})
 
-        nombre_val = (tf_nombre.value or "").strip()
+        # Validaciones comunes
+        nombre_tf: ft.TextField = ctrls.get("nombre")  # type: ignore[assignment]
+        tipo_dd: ft.Dropdown = ctrls.get("tipo")       # type: ignore[assignment]
+        com_tf: ft.TextField = ctrls.get("comision")   # type: ignore[assignment]
+        est_dd: ft.Dropdown = ctrls.get("estado")      # type: ignore[assignment]
+
+        errores = []
+        nombre_val = (nombre_tf.value or "").strip() if nombre_tf else ""
         if len(nombre_val) < 3 or not all(c.isalpha() or c.isspace() for c in nombre_val):
-            tf_nombre.border_color = ft.colors.RED
+            if nombre_tf: nombre_tf.border_color = ft.colors.RED
             errores.append("Nombre inválido")
 
         try:
-            com_val = float(tf_com.value)
+            com_val = float(com_tf.value) if com_tf else 0.0
             if com_val < 0:
                 raise ValueError
-            tf_com.border_color = None
         except Exception:
-            tf_com.border_color = ft.colors.RED
+            if com_tf: com_tf.border_color = ft.colors.RED
             errores.append("Comisión inválida")
 
-        if self.page:
-            self.page.update()
-
+        if self.page: self.page.update()
         if errores:
             self._snack_error("❌ " + " / ".join(errores))
             return
 
-        res = self.model.actualizar_trabajador(
-            trabajador_id=rid,
-            nombre=nombre_val,
-            tipo=dd_tipo.value or E_TRAB_TIPO.OCASIONAL.value,
-            comision_porcentaje=com_val,
-            estado=dd_estado.value or E_TRAB_ESTADO.ACTIVO.value,
-        )
-        self.fila_editando = None
-        if res.get("status") == "success":
-            self._actualizar_tabla()
-            self._snack_ok("✅ Cambios guardados correctamente.")
+        if is_new:
+            # Crear
+            res = self.model.crear_trabajador(
+                nombre=nombre_val,
+                tipo=(tipo_dd.value if tipo_dd else E_TRAB_TIPO.OCASIONAL.value),
+                comision_porcentaje=com_val,
+                telefono=None,
+                email=None,
+                estado=(est_dd.value if est_dd else E_TRAB_ESTADO.ACTIVO.value),
+            )
+            self.fila_nueva_en_proceso = False
+            if res.get("status") == "success":
+                self._snack_ok("✅ Trabajador agregado.")
+                self._edit_controls.pop(-1, None)
+                self._refrescar_dataset()
+            else:
+                self._snack_error(f"❌ {res.get('message')}")
         else:
-            self._snack_error(f"❌ No se pudo guardar: {res.get('message')}")
+            # Actualizar
+            rid = int(row.get(self.ID))
+            res = self.model.actualizar_trabajador(
+                trabajador_id=rid,
+                nombre=nombre_val,
+                tipo=(tipo_dd.value if tipo_dd else E_TRAB_TIPO.OCASIONAL.value),
+                comision_porcentaje=com_val,
+                estado=(est_dd.value if est_dd else E_TRAB_ESTADO.ACTIVO.value),
+            )
+            self.fila_editando = None
+            if res.get("status") == "success":
+                self._snack_ok("✅ Cambios guardados correctamente.")
+                self._edit_controls.pop(rid, None)
+                self._refrescar_dataset()
+            else:
+                self._snack_error(f"❌ No se pudo guardar: {res.get('message')}")
+
+    def _on_cancel_row(self, row: Dict[str, Any]):
+        # Si era nueva -> eliminar fila temporal
+        if row.get("_is_new") or (row.get(self.ID) in (None, "", 0)):
+            self.fila_nueva_en_proceso = False
+            # remover última fila _is_new
+            rows = self.table_builder.get_rows()
+            try:
+                idx = next(i for i, r in enumerate(rows) if r is row or r.get("_is_new"))
+                self.table_builder.remove_row_at(idx)
+            except Exception:
+                pass
+            self._edit_controls.pop(-1, None)
+            if self.page: self.page.update()
+            return
+
+        # Si era edición -> salir de edición
+        rid = row.get(self.ID)
+        self.fila_editando = None
+        self._edit_controls.pop(rid if rid is not None else -1, None)
+        self._refrescar_dataset()
 
     # =========================================================
     # Eliminar
@@ -676,144 +671,28 @@ class TrabajadoresContainer(ft.Container):
         self.page.close(dlg)
         if res.get("status") == "success":
             self._snack_ok("✅ Trabajador eliminado.")
-            self._actualizar_tabla()
+            self._refrescar_dataset()
         else:
             self._snack_error(f"❌ No se pudo eliminar: {res.get('message')}")
 
     # =========================================================
-    # Fila NUEVA
+    # Fila NUEVA (usa TableBuilder)
     # =========================================================
     def _insertar_fila_nueva(self, _e=None):
         if self.fila_nueva_en_proceso:
             self._snack_ok("ℹ️ Ya hay un registro nuevo en proceso.")
             return
-
         self.fila_nueva_en_proceso = True
 
-        # Inputs
-        nombre_input = ft.TextField(
-            hint_text="Nombre completo",
-            expand=True,
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-        )
-        self._apply_textfield_palette(nombre_input)
-
-        tipo_input = self._mk_dd_tipo(E_TRAB_TIPO.OCASIONAL.value)
-
-        com_input = ft.TextField(
-            hint_text="Comisión %",
-            keyboard_type=ft.KeyboardType.NUMBER,
-            expand=True,
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-        )
-        self._apply_textfield_palette(com_input)
-
-        estado_input = self._mk_dd_estado(E_TRAB_ESTADO.ACTIVO.value)
-
-        def validar_nombre(_):
-            val = nombre_input.value.strip()
-            nombre_input.border_color = None if len(val) >= 3 and all(c.isalpha() or c.isspace() for c in val) else ft.colors.RED
-            if self.page:
-                self.page.update()
-
-        def validar_comision(_):
-            try:
-                v = float(com_input.value)
-                com_input.border_color = None if v >= 0 else ft.colors.RED
-            except Exception:
-                com_input.border_color = ft.colors.RED
-            if self.page:
-                self.page.update()
-
-        nombre_input.on_change = validar_nombre
-        com_input.on_change = validar_comision
-
-        def on_guardar(_):
-            errores = []
-
-            val_nombre = (nombre_input.value or "").strip()
-            if len(val_nombre) < 3 or not all(c.isalpha() or c.isspace() for c in val_nombre):
-                nombre_input.border_color = ft.colors.RED
-                errores.append("Nombre inválido (mín. 3 letras)")
-
-            try:
-                val_com = float(com_input.value)
-                if val_com < 0:
-                    raise ValueError
-            except Exception:
-                com_input.border_color = ft.colors.RED
-                errores.append("Comisión inválida (número positivo)")
-
-            if self.page:
-                self.page.update()
-
-            if errores:
-                self._snack_error("❌ " + " / ".join(errores))
-                return
-
-            res = self.model.crear_trabajador(
-                nombre=val_nombre,
-                tipo=tipo_input.value or E_TRAB_TIPO.OCASIONAL.value,
-                comision_porcentaje=float(com_input.value),
-                telefono=None,
-                email=None,
-                estado=estado_input.value or E_TRAB_ESTADO.ACTIVO.value,
-            )
-            self.fila_nueva_en_proceso = False
-            if res.get("status") == "success":
-                self._snack_ok("✅ Trabajador agregado.")
-                self._actualizar_tabla()
-            else:
-                self._snack_error(f"❌ {res.get('message')}")
-
-        def on_cancelar(_):
-            self.fila_nueva_en_proceso = False
-            try:
-                self.table.rows.pop()
-            except Exception:
-                pass
-            if self.page:
-                self.page.update()
-
-        nueva_fila = ft.DataRow(
-            cells=[
-                ft.DataCell(ft.Text("-")),
-                ft.DataCell(ft.Container(nombre_input, width=300, expand=True)),
-                ft.DataCell(ft.Container(tipo_input, width=140, expand=True)),
-                ft.DataCell(ft.Container(com_input, width=120, expand=True)),
-                ft.DataCell(ft.Container(estado_input, width=120, expand=True)),
-                ft.DataCell(
-                    ft.Row(
-                        [
-                            ft.IconButton(
-                                icon=ft.icons.CHECK,
-                                icon_color=ft.colors.GREEN_600,
-                                tooltip="Aceptar",
-                                on_click=on_guardar,
-                            ),
-                            ft.IconButton(
-                                icon=ft.icons.CLOSE,
-                                icon_color=ft.colors.RED_600,
-                                tooltip="Cancelar",
-                                on_click=on_cancelar,
-                            ),
-                        ],
-                        spacing=6,
-                    )
-                ),
-            ]
-        )
-
-        if self.table is None:
-            self._actualizar_tabla()
-        if self.table:
-            self.table.rows.append(nueva_fila)
-        if self.page:
-            self.page.update()
-
-        nombre_input.focus()
+        nueva = {
+            self.ID: None,
+            self.NOMBRE: "",
+            self.TIPO: E_TRAB_TIPO.OCASIONAL.value,
+            self.COMISION: "",
+            self.ESTADO: E_TRAB_ESTADO.ACTIVO.value,
+            "_is_new": True,
+        }
+        self.table_builder.add_row(nueva, auto_scroll=True)
 
     # =========================================================
     # Import / Export (placeholder)
@@ -830,7 +709,6 @@ class TrabajadoresContainer(ft.Container):
     def _snack_ok(self, msg: str):
         if not self.page:
             return
-        # Usamos FG_COLOR y CARD_BG para integrarlo al tema
         self.page.snack_bar = ft.SnackBar(
             ft.Text(msg, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
             bgcolor=self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT),

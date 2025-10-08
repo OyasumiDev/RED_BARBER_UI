@@ -1,8 +1,9 @@
+# app/ui/builders/table_builder.py
 from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 import flet as ft
 
-# BotonFactory (helpers)
+# BotonFactory (acciones de fila)
 from app.ui.factory.boton_factory import (
     boton_aceptar, boton_cancelar, boton_editar, boton_borrar
 )
@@ -10,26 +11,21 @@ from app.ui.factory.boton_factory import (
 # SortManager
 from app.ui.sorting.sort_manager import SortManager
 
-# Scroll controller (scroll vertical/horizontal de la tabla)
+# Scroll controller
 from app.ui.scroll.table_scroll_controller import ScrollTableController
 
-
 ColumnFormatter = Callable[[Any, Dict[str, Any]], ft.Control]
+ActionsBuilder = Callable[[Dict[str, Any], bool], ft.Control]
 
 
 class TableBuilder:
     """
-    TableBuilder: DataTable integrada con SortManager y BotonFactory,
-    con soporte opcional de auto-scroll a nuevas filas usando ScrollTableController.
-
-    Reglas de acciones:
-      - Fila NUEVA -> Aceptar / Cancelar
-      - Fila EXISTENTE -> Editar / Borrar
-
-    Detecta "fila nueva" así (en orden):
-      1) is_new_row_fn(row) si se proporciona
-      2) id_key si se proporcionó y row[id_key] está vacío/None/0
-      3) fallback: si no veo un id típico y row["_is_new"] es True
+    TableBuilder v2 (compat con tu Flet):
+    - DataTable + SortManager + BotonFactory
+    - Scroll automático a nuevas filas
+    - Header opcional vía build_view()
+    - Ancho/alineación por columna, formatters por celda
+    - Mutaciones parciales (add/update/remove)
     """
 
     def __init__(
@@ -47,7 +43,7 @@ class TableBuilder:
         # estilo / métricas
         column_spacing: int = 24,
         heading_row_height: int = 44,
-        data_row_min_height: int = 40,
+        data_row_height: int = 40,   # <- mantenemos el nombre externo
         actions_title: str = "Acciones",
         actions_width: Optional[int] = 140,
         dense_text: bool = True,
@@ -59,14 +55,10 @@ class TableBuilder:
         auto_scroll_new: bool = True,
         auto_scroll_target: str = "last",  # "last" | "first"
         auto_scroll_margin_top: int = 8,
+        # acciones personalizadas
+        actions_builder: Optional[ActionsBuilder] = None,
     ) -> None:
-        """
-        columns: lista de dicts:
-          - key (str)        -> llave del dato en la fila
-          - title (str)      -> texto del encabezado
-          - width (int|None) -> ancho del header (opcional)
-          - formatter (callable|None) -> ColumnFormatter(value, row) -> ft.Control
-        """
+
         self.group = group
         self.sort = sort_manager
 
@@ -83,21 +75,12 @@ class TableBuilder:
         # estado de datos
         self._rows_data: List[Dict[str, Any]] = []
 
-        # control raíz
-        self._table = ft.DataTable(
-            columns=[], rows=[],
-            column_spacing=column_spacing,
-            heading_row_height=heading_row_height,
-            data_row_min_height=data_row_min_height,
-            show_checkbox_column=False,
-        )
-
-        # tipografías compactas (opcional)
-        self._text_size = 12 if dense_text else 14
-
-        # métricas para scroll controller
+        # Métricas internas unificadas
         self._heading_row_height = heading_row_height
-        self._data_row_min_height = data_row_min_height
+        self._row_height = data_row_height
+
+        # tipografías compactas
+        self._text_size = 12 if dense_text else 14
 
         # identificación de filas
         self._id_key = id_key
@@ -109,127 +92,142 @@ class TableBuilder:
         self._auto_scroll_target = auto_scroll_target
         self._auto_scroll_margin_top = auto_scroll_margin_top
 
-    # ===========================
-    # Integración Scroll Controller
-    # ===========================
+        # acciones personalizadas por fila
+        self._actions_builder = actions_builder
+
+        # header opcional (sólo con build_view)
+        self._header_title: Optional[str] = None
+        self._header_controls: List[ft.Control] = []
+        self._header_align: ft.MainAxisAlignment = ft.MainAxisAlignment.END
+
+        # ⚠️ IMPORTANTE: usa data_row_min_height (no data_row_height)
+        self._table = ft.DataTable(
+            columns=[],
+            rows=[],
+            column_spacing=column_spacing,
+            heading_row_height=self._heading_row_height,
+            data_row_min_height=self._row_height,  # <- compat
+            show_checkbox_column=False,
+        )
+
+    # -------- Header opcional (para build_view) --------
+    def set_header(
+        self,
+        *,
+        title: Optional[str] = None,
+        controls: Optional[List[ft.Control]] = None,
+        alignment: ft.MainAxisAlignment = ft.MainAxisAlignment.END,
+    ) -> None:
+        self._header_title = title
+        self._header_controls = controls or []
+        self._header_align = alignment
+
+    def _build_header_row(self) -> Optional[ft.Row]:
+        if not self._header_title and not self._header_controls:
+            return None
+        left: List[ft.Control] = []
+        if self._header_title:
+            left.append(ft.Text(self._header_title, size=self._text_size + 2, weight="bold"))
+        return ft.Row(
+            controls=[
+                ft.Row(left, alignment=ft.MainAxisAlignment.START, expand=True),
+                ft.Row(self._header_controls, alignment=self._header_align),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    # -------- Scroll controller --------
     def attach_scroll_controller(self, stc: ScrollTableController) -> None:
-        """Adjunta/actualiza el ScrollTableController y sincroniza métricas."""
         self._stc = stc
         self._stc.attach_table_metrics(
             heading_height=self._heading_row_height,
-            row_height=self._data_row_min_height,
+            row_height=self._row_height,
         )
 
-    # ===========================
-    # Construcción de tabla
-    # ===========================
+    # -------- Construcción --------
     def build(self) -> ft.DataTable:
-        """Devuelve el control DataTable listo para agregarse a la vista."""
         self._build_headers()
         self._rebuild_rows()
-
-        # Si ya tenemos un scroll controller, sincroniza métricas
         if self._stc:
             self._stc.attach_table_metrics(
                 heading_height=self._heading_row_height,
-                row_height=self._data_row_min_height,
+                row_height=self._row_height,
             )
         return self._table
 
+    def build_view(self) -> ft.Control:
+        self.build()
+        parts: List[ft.Control] = []
+        header = self._build_header_row()
+        if header:
+            parts.append(header)
+            parts.append(ft.Divider(height=2))
+        parts.append(self._table)
+        return ft.Column(controls=parts, expand=False, spacing=6)
+
     def _build_headers(self) -> None:
         cols: List[ft.DataColumn] = []
-
         for col in self.columns:
             key = col["key"]
             title = col["title"]
             width = col.get("width")
+            align = self._to_alignment(col.get("align", "start"))
+
             header_ctrl = self.sort.create_header(
                 titulo=title,
                 campo=key,
                 grupo=self.group,
                 width=width,
                 text_size=self._text_size,
-                on_click=self.on_sort_change  # la vista decide reconsultar/ordenar
+                on_click=self.on_sort_change
             )
-            cols.append(ft.DataColumn(label=header_ctrl))
+            header_wrapped: ft.Control = ft.Container(header_ctrl, alignment=align)
+            if width:
+                header_wrapped = ft.Container(header_ctrl, width=width, alignment=align)
 
-        # Columna de acciones
-        actions_label = (
-            ft.Container(
-                ft.Text(self.actions_title, size=self._text_size, weight="bold"),
-                width=self.actions_width,
-            )
-            if self.actions_width
-            else ft.Text(self.actions_title, size=self._text_size, weight="bold")
+            cols.append(ft.DataColumn(label=header_wrapped))
+
+        actions_text = ft.Text(self.actions_title, size=self._text_size, weight="bold")
+        actions_label: ft.Control = (
+            ft.Container(actions_text, width=self.actions_width, alignment=ft.alignment.center_left)
+            if self.actions_width else actions_text
         )
         cols.append(ft.DataColumn(label=actions_label))
-
         self._table.columns = cols
 
-    # ===========================
-    # Render filas
-    # ===========================
+    # -------- Render filas --------
     def _cell_from_value(
-        self, value: Any, row: Dict[str, Any], formatter: Optional[ColumnFormatter]
+        self, value: Any, row: Dict[str, Any], formatter: Optional[ColumnFormatter], width: Optional[int], align: str
     ) -> ft.DataCell:
         if formatter:
-            ctrl = formatter(value, row)
-            return ft.DataCell(ctrl)
-        text = "" if value is None else str(value)
-        return ft.DataCell(ft.Text(text, size=self._text_size))
+            content = formatter(value, row)
+        else:
+            content = ft.Text("" if value is None else str(value), size=self._text_size)
 
-    def _has_valid_id(self, row: Dict[str, Any]) -> bool:
-        """
-        Devuelve True si la fila aparenta tener un ID persistido.
-        Se usa para decidir acciones (Aceptar/Cancelar vs Editar/Borrar).
-        """
-        if self._id_key:
-            val = row.get(self._id_key, None)
-            return val not in (None, "", 0)
-        # Heurística por claves comunes si no se configuró id_key:
-        for k in ("id", "ID", "id_trabajador", "numero_nomina", "uuid"):
-            if k in row and row.get(k) not in (None, "", 0):
-                return True
-        return False
-
-    def _is_new_row(self, row: Dict[str, Any]) -> bool:
-        """Regla unificada de 'fila nueva'."""
-        if self._is_new_row_fn:
-            try:
-                return bool(self._is_new_row_fn(row))
-            except Exception:
-                pass
-        # Si ya tiene ID válido, NO es nueva aunque alguien ponga _is_new=True
-        if self._has_valid_id(row):
-            return False
-        # Si no hay ID válido, considerar nueva si el flag está presente o si no hay ID en absoluto
-        if row.get("_is_new", False):
-            return True
-        # No hay ID detectado y tampoco _is_new -> asume nueva si falta cualquier id común
-        return True if not self._has_valid_id(row) else False
+        alignment = self._to_alignment(align)
+        content = ft.Container(content, alignment=alignment) if not width else ft.Container(content, width=width, alignment=alignment)
+        return ft.DataCell(content)
 
     def _actions_for_row(self, row: Dict[str, Any]) -> ft.DataCell:
         is_new = self._is_new_row(row)
+        if self._actions_builder:
+            return ft.DataCell(self._actions_builder(row, is_new))
 
-        # ⚠️ SIN Container envolviendo: usa IconButtons del factory "desnudos", como en tu container.
         if is_new:
-            btns = ft.Row(
-                [
-                    boton_aceptar(lambda e, r=row: self.on_accept and self.on_accept(r)),
-                    boton_cancelar(lambda e, r=row: self.on_cancel and self.on_cancel(r)),
-                ],
+            return ft.DataCell(
+                ft.Row(
+                    [boton_aceptar(lambda e, r=row: self.on_accept and self.on_accept(r)),
+                     boton_cancelar(lambda e, r=row: self.on_cancel and self.on_cancel(r))],
+                    spacing=8, alignment=ft.MainAxisAlignment.START
+                )
+            )
+        return ft.DataCell(
+            ft.Row(
+                [boton_editar(lambda e, r=row: self.on_edit and self.on_edit(r)),
+                 boton_borrar(lambda e, r=row: self.on_delete and self.on_delete(r))],
                 spacing=8, alignment=ft.MainAxisAlignment.START
             )
-            return ft.DataCell(btns)
-
-        btns = ft.Row(
-            [
-                boton_editar(lambda e, r=row: self.on_edit and self.on_edit(r)),
-                boton_borrar(lambda e, r=row: self.on_delete and self.on_delete(r)),
-            ],
-            spacing=8, alignment=ft.MainAxisAlignment.START
         )
-        return ft.DataCell(btns)
 
     def _build_row(self, row: Dict[str, Any]) -> ft.DataRow:
         cells: List[ft.DataCell] = []
@@ -237,58 +235,154 @@ class TableBuilder:
             key = col["key"]
             formatter: Optional[ColumnFormatter] = col.get("formatter")
             value = row.get(key, None)
-            cells.append(self._cell_from_value(value, row, formatter))
+            width = col.get("width")
+            align = col.get("align", "start")
+            cells.append(self._cell_from_value(value, row, formatter, width, align))
         cells.append(self._actions_for_row(row))
         return ft.DataRow(cells=cells)
 
     def _rebuild_rows(self) -> None:
         self._table.rows = [self._build_row(r) for r in self._rows_data]
 
-    # ===========================
-    # API pública de datos
-    # ===========================
+    # -------- API pública de datos --------
     def set_rows(self, rows: List[Dict[str, Any]]) -> None:
-        """
-        Establece las filas a renderizar. La vista controla el orden.
-        Para marcar una fila como nueva (Aceptar/Cancelar):
-           - Recomendado: deja el ID None/""/0 (usa id_key), y opcional _is_new=True.
-           - Alternativa si no tienes id_key: usa row["_is_new"] = True (y sin ID típico).
-        """
         self._rows_data = rows or []
         self._rebuild_rows()
-        if self._table.page:
-            self._table.update()
-
-        # Auto-scroll a la(s) fila(s) nueva(s) si corresponde
+        self._soft_update()
         if self._stc and self._auto_scroll_new:
             self._auto_scroll_to_new_rows()
 
+    def add_row(self, row: Dict[str, Any], *, auto_scroll: Optional[bool] = None) -> None:
+        self._rows_data.append(row)
+        self._table.rows.append(self._build_row(row))
+        self._soft_update()
+
+        do_scroll = self._auto_scroll_new if auto_scroll is None else auto_scroll
+        if do_scroll and self._stc:
+            self._scroll_to_index(len(self._rows_data) - 1)
+
+    def update_row_at(self, index: int, new_row: Dict[str, Any]) -> None:
+        if 0 <= index < len(self._rows_data):
+            self._rows_data[index] = new_row
+            self._table.rows[index] = self._build_row(new_row)
+            self._soft_update()
+
+    def update_row_by_id(self, id_value: Any, new_row: Dict[str, Any]) -> bool:
+        idx = self._index_by_id(id_value)
+        if idx is None:
+            return False
+        self.update_row_at(idx, new_row)
+        return True
+
+    def remove_row_at(self, index: int) -> None:
+        if 0 <= index < len(self._rows_data):
+            del self._rows_data[index]
+            del self._table.rows[index]
+            self._soft_update()
+
+    def remove_row_by_id(self, id_value: Any) -> bool:
+        idx = self._index_by_id(id_value)
+        if idx is None:
+            return False
+        self.remove_row_at(idx)
+        return True
+
     def refresh(self) -> None:
         self._rebuild_rows()
-        if self._table.page:
-            self._table.update()
+        self._soft_update()
 
-    # ===========================
-    # Utilidades
-    # ===========================
+    def get_rows(self) -> List[Dict[str, Any]]:
+        return list(self._rows_data)
+
+    # -------- Utilidades --------
     def get_sort_state(self) -> Dict[str, Optional[object]]:
         key, asc = self.sort.get(self.group)
         return {"key": key, "asc": asc}
 
+    def set_column_formatter(self, key: str, formatter: Optional[ColumnFormatter]) -> None:
+        for col in self.columns:
+            if col["key"] == key:
+                if formatter:
+                    col["formatter"] = formatter
+                elif "formatter" in col:
+                    del col["formatter"]
+                break
+        self._rebuild_rows()
+        self._soft_update()
+
+    def set_columns(self, columns: List[Dict[str, Any]]) -> None:
+        self.columns = columns or []
+        self._build_headers()
+        self._rebuild_rows()
+        self._soft_update()
+
+    def attach_actions_builder(self, builder: ActionsBuilder) -> None:
+        self._actions_builder = builder
+        self.refresh()
+
     def _auto_scroll_to_new_rows(self) -> None:
-        """
-        Busca filas con _is_new == True y hace scroll automático.
-        Nota: si tu contenedor pone _is_new=True en edición de registros existentes,
-        esta rutina NO cambia acciones (eso lo decide _is_new_row), solo el scroll.
-        """
         indices = [i for i, r in enumerate(self._rows_data) if r.get("_is_new") is True]
         if not indices:
             return
-
         idx = indices[-1] if self._auto_scroll_target == "last" else indices[0]
+        self._scroll_to_index(idx)
+
+    def _scroll_to_index(self, idx: int) -> None:
+        if not self._stc:
+            return
         try:
-            # Desplazamiento con las métricas ya informadas al ScrollTableController
-            self._stc.scroll_to_row_index(idx, margin_top=self._auto_scroll_margin_top)  # type: ignore[union-attr]
+            self._stc.scroll_to_row_index(idx, margin_top=self._auto_scroll_margin_top)
         except Exception:
-            # fallback: ir al final si algo falla
-            self._stc.scroll_to_new_record()  # type: ignore[union-attr]
+            try:
+                self._stc.scroll_to_new_record()
+            except Exception:
+                pass
+
+    def _index_by_id(self, id_value: Any) -> Optional[int]:
+        if self._id_key is None:
+            return None
+        for i, r in enumerate(self._rows_data):
+            if r.get(self._id_key) == id_value:
+                return i
+        return None
+
+    def _has_valid_id(self, row: Dict[str, Any]) -> bool:
+        if self._id_key:
+            val = row.get(self._id_key, None)
+            return val not in (None, "", 0)
+        for k in ("id", "ID", "id_trabajador", "numero_nomina", "uuid"):
+            if k in row and row.get(k) not in (None, "", 0):
+                return True
+        return False
+
+    def _is_new_row(self, row: Dict[str, Any]) -> bool:
+        if self._is_new_row_fn:
+            try:
+                return bool(self._is_new_row_fn(row))
+            except Exception:
+                pass
+        if self._has_valid_id(row):
+            return False
+        if row.get("_is_new", False):
+            return True
+        return True if not self._has_valid_id(row) else False
+
+    def _to_alignment(self, align: str) -> ft.alignment.Alignment:
+        if align == "center":
+            return ft.alignment.center
+        if align in ("end", "right"):
+            return ft.alignment.center_right
+        return ft.alignment.center_left
+
+    def _soft_update(self) -> None:
+        try:
+            self._table.update()
+            return
+        except Exception:
+            pass
+        p = getattr(self._table, "page", None)
+        if p is not None:
+            try:
+                p.update()
+            except Exception:
+                pass
