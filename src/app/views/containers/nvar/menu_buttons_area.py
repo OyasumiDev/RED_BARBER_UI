@@ -55,7 +55,6 @@ class MenuButtonsArea(ft.Column):
             tooltip = spec.get("tooltip", "")
             key = spec.get("key", "")
 
-            # Contenido base
             row = ft.Row(
                 controls=[
                     ft.Image(src=icon_src, width=26, height=26, fit=ft.ImageFit.CONTAIN),
@@ -73,10 +72,10 @@ class MenuButtonsArea(ft.Column):
                 on_click=self._ensure_on_tap(spec),
             )
 
-            # 🔐 Metadatos estables para selección
+            # Metadatos para selección
             btn.data = {"route": route, "key": key}
 
-            # Estilo inicial según estado seleccionado
+            # Estilo inicial
             selected = (route == self._current_route)
             self._apply_style(btn, selected)
 
@@ -88,18 +87,13 @@ class MenuButtonsArea(ft.Column):
     # Estilos
     # ============================================================
     def _apply_style(self, ctrl: ft.Container, selected: bool) -> None:
-        """
-        Aplica el estilo a un botón según tema y si está seleccionado.
-        """
-        # Colores base desde paleta (heredados del Nav)
+        """Aplica el estilo a un botón según tema y si está seleccionado."""
         base_bg = self._bg or ("#1E1E1E" if self._dark else "#F6F6F6")
         base_fg = self._fg or ("#F6F6F6" if self._dark else "#1E1E1E")
 
-        # Colores del activo (marca)
         active_bg = "#D32F2F"
         active_fg = "#FFFFFF"
 
-        # Contenido esperado: Row[Image, Text]
         row = ctrl.content
         txt = None
         if isinstance(row, ft.Row) and len(row.controls) >= 2 and isinstance(row.controls[1], ft.Text):
@@ -121,20 +115,16 @@ class MenuButtonsArea(ft.Column):
             ctrl.border = None
 
     # ============================================================
-    # Callbacks dinámicos de navegación
+    # Callbacks de navegación
     # ============================================================
     def _ensure_on_tap(self, spec: Dict[str, Any]) -> Callable:
-        """
-        Devuelve un callback dinámico que obtiene la página activa
-        desde AppState y ejecuta page.go(route) en tiempo real.
-        """
         route = spec.get("route")
         if not route:
             return lambda *_: None
 
         def _go(_):
             try:
-                page = AppState().get_page()  # ← obtiene la page actual cada vez
+                page = AppState().get_page()
                 if page:
                     print(f"[MenuButtonsArea] 🚀 Navegando a → {route}")
                     page.go(route)
@@ -146,7 +136,7 @@ class MenuButtonsArea(ft.Column):
         return _go
 
     # ============================================================
-    # Actualización dinámica del estado visual
+    # Actualización de estado visual (idempotente)
     # ============================================================
     def update_state(
         self,
@@ -158,6 +148,9 @@ class MenuButtonsArea(ft.Column):
         fg: Optional[str] = None,      # ← NUEVO
         force: bool = False,
     ) -> None:
+        """
+        Actualiza expandido/tema/paleta y recolorea el activo.
+        """
         new_route = (current_route or self._current_route or "/").rstrip("/") or "/"
         changed = force
 
@@ -168,7 +161,7 @@ class MenuButtonsArea(ft.Column):
             self._dark = dark
             changed = True
 
-        # ← NUEVO: refrescar paleta base cuando cambie el tema
+        # Refrescar paleta base al cambiar tema
         if bg is not None and bg != self._bg:
             self._bg = bg
             changed = True
@@ -195,10 +188,9 @@ class MenuButtonsArea(ft.Column):
         self.update()
 
     # ============================================================
-    # Cambio manual de ruta (sin redibujar toda la barra)
+    # Cambio manual de ruta
     # ============================================================
     def set_current_route(self, route: str) -> None:
-        """Sincroniza el estado visual con la ruta actual."""
         route = (route or "/").rstrip("/") or "/"
         print(f"[MenuButtonsArea] 📍 Sincronizando ruta → {route}")
         self.update_state(current_route=route)

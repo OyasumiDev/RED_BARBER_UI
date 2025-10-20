@@ -206,12 +206,15 @@ class NavBarContainer(ft.Container):
                 current_route=(page.route if page else None),
                 expanded=self._expanded,
                 dark=self.theme_ctrl.is_dark(),
+                bg=pal.get("ITEM_BG", pal.get("BTN_BG", ft.colors.GREY_200)),  # ← NUEVO
+                fg=pal.get("ITEM_FG", ft.colors.ON_SURFACE),                    # ← NUEVO
                 force=True,
             )
         if self._controls:
             self._controls.update_state(expanded=self._expanded)
 
         print(f"[NavBar] 🎨 Paleta aplicada (modo={'oscuro' if self.theme_ctrl.is_dark() else 'claro'})")
+
 
     # ======================================================
     # Eventos / Listeners
@@ -237,13 +240,15 @@ class NavBarContainer(ft.Container):
             return
 
         page = self.app.get_page()
+        pal = self.theme_ctrl.get_colors("navbar")  # ← para mantener paleta coherente
 
         if self._menu:
-            # 🔑 Reenviar TODO: expandido + tema + ruta actual para repintado idempotente
             self._menu.update_state(
                 current_route=(page.route if page else None),
                 expanded=self._expanded,
                 dark=self.theme_ctrl.is_dark(),
+                bg=pal.get("ITEM_BG", pal.get("BTN_BG", ft.colors.GREY_200)),  # ← NUEVO
+                fg=pal.get("ITEM_FG", ft.colors.ON_SURFACE),                    # ← NUEVO
             )
         if self._controls:
             self._controls.update_state(expanded=self._expanded)
@@ -258,6 +263,7 @@ class NavBarContainer(ft.Container):
             )
 
         self._safe_update()
+
 
     # ======================================================
     # Acciones inferiores
