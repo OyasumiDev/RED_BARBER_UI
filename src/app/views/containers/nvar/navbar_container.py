@@ -271,30 +271,81 @@ class NavBarContainer(ft.Container):
         self.theme_ctrl.toggle()
 
     def _logout(self, *_):
+        """
+        Cierra la aplicación por completo.
+        - Persiste estado útil (expandido y tema).
+        - Limpia claves de sesión en client_storage.
+        - Evita rebotes de navegación.
+        - Intenta cerrar la ventana de forma robusta (destroy → close → exit).
+        """
         print("[NavBar] 🚪 Logout solicitado (guardando cambios y cerrando aplicación)")
         page = self.app.get_page()
 
         try:
-            # Guardar estado actual
+            # 1) Persistencias mínimas
             self.layout.set_state(self._expanded, persist=True)
-            self.app.set_client_value("app.theme", "dark" if self.theme_ctrl.tema_oscuro else "light")
+            # Usa AppState como fuente de verdad de tema (clave 'app.theme')
+            self.app.set_client_value(
+                "app.theme",
+                "dark" if self.theme_ctrl.is_dark() else "light"
+            )
 
-            # Limpiar sesión
+            # 2) Limpiar sesión y evitar rebotes
             if page:
-                page.client_storage.remove("app.user")
+                # Claves típicas de sesión (amplía si usas otras)
+                for k in ("app.user", "session.user", "auth.token"):
+                    try:
+                        page.client_storage.remove(k)
+                    except Exception:
+                        pass
+
+                # Evitar que algún handler intente redirigir al login
+                try:
+                    page.on_route_change = None
+                except Exception:
+                    pass
 
             print("[NavBar] 💾 Estado guardado y sesión limpiada correctamente.")
 
-            # Cerrar aplicación
+            # 3) Cierre robusto de la ventana / proceso
             if page:
                 print("[NavBar] 🪟 Cerrando aplicación...")
+                # Asegura vaciado de cambios visuales antes de cerrar
                 try:
-                    page.window_destroy()
+                    page.update()
                 except Exception:
-                    page.window_close()
+                    pass
+
+                try:
+                    # En desktop, destroy suele ser el más “fuerte”
+                    page.window_destroy()
+                    return
+                except Exception:
+                    try:
+                        page.window_close()
+                        return
+                    except Exception:
+                        pass
+
+            # 4) Último recurso: terminar el proceso (si estamos fuera de un Page válido)
+            try:
+                import sys
+                sys.exit(0)
+            except SystemExit:
+                pass
+            except Exception:
+                pass
+
+            # Fallback final duro
+            try:
+                import os
+                os._exit(0)
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[NavBar] ⚠️ Error al intentar cerrar sesión: {e}")
+
 
     # ======================================================
     # API pública

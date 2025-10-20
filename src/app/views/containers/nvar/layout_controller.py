@@ -60,24 +60,29 @@ class LayoutController:
     # ======================================================
     # Listeners
     # ======================================================
-    def add_listener(self, callback: Callable[[bool], None]):
-        """Agrega un listener, evitando duplicados."""
+    def _register(self, callback: Callable[[bool], None], *, label: str) -> bool:
+        """Registra un listener si no existe. Retorna True si lo añadió."""
         if callback in self._listeners:
-            return
+            return False
         self._listeners.add(callback)
-        print(f"[LayoutController] 👂 Listener agregado ({len(self._listeners)} total).")
+        print(f"[LayoutController] {label} ({len(self._listeners)} total).")
+        return True
 
-    def remove_listener(self, callback: Callable[[bool], None]):
-        """Elimina un listener registrado."""
+    def add_listener(self, callback: Callable[[bool], None]) -> bool:
+        """Agrega un listener, evitando duplicados. Retorna True si lo agregó."""
+        return self._register(callback, label="👂 Listener agregado")
+
+    def remove_listener(self, callback: Callable[[bool], None]) -> bool:
+        """Elimina un listener registrado. Retorna True si lo eliminó."""
         if callback in self._listeners:
             self._listeners.remove(callback)
             print(f"[LayoutController] 🗑️ Listener eliminado ({len(self._listeners)} restantes).")
+            return True
+        return False
 
-    def ensure_listener(self, callback: Callable[[bool], None]):
-        """Asegura que el listener esté registrado incluso tras remount."""
-        if callback not in self._listeners:
-            self._listeners.add(callback)
-            print(f"[LayoutController] ✅ Listener restaurado ({len(self._listeners)} total).")
+    def ensure_listener(self, callback: Callable[[bool], None]) -> bool:
+        """Asegura que el listener esté registrado incluso tras remount. Retorna True si lo agregó."""
+        return self._register(callback, label="✅ Listener restaurado")
 
     def notify_listeners(self):
         """Notifica a todos los listeners del cambio de estado."""

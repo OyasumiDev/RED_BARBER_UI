@@ -39,6 +39,7 @@ class ControlButtonsArea(ft.Column):
         self.expanded = bool(expanded) if expanded is not None else False
         self.mostrar_theme = mostrar_theme
 
+        # Callbacks provistos por el contenedor padre (NavBarContainer)
         self.on_toggle_theme = on_toggle_theme
         self.on_toggle_expand = on_toggle_expand
         self.on_logout = on_logout
@@ -69,7 +70,7 @@ class ControlButtonsArea(ft.Column):
             icon_src=self._icon_expand(),
             label="Contraer" if self.expanded else "Expandir",
             tooltip="Contraer" if self.expanded else "Expandir",
-            on_click=lambda e: self.on_toggle_expand(),
+            on_click=self.on_toggle_expand,  # ← handler directo
             pal=self.pal,
             expanded=self.expanded,
             selected=False,
@@ -86,7 +87,7 @@ class ControlButtonsArea(ft.Column):
                 icon_src=self._icon_theme(),
                 label="Tema",
                 tooltip="Cambiar tema",
-                on_click=lambda e: self.on_toggle_theme(),
+                on_click=self.on_toggle_theme,  # ← handler directo
                 pal=self.pal,
                 expanded=self.expanded,
                 selected=False,
@@ -102,7 +103,7 @@ class ControlButtonsArea(ft.Column):
             icon_src="assets/buttons/exit-button.png",
             label="Salir",
             tooltip="Cerrar sesión",
-            on_click=lambda e: self.on_logout(),
+            on_click=self.on_logout,  # ← handler directo
             pal=self.pal,
             expanded=self.expanded,
             selected=False,
