@@ -154,16 +154,10 @@ class MenuButtonsArea(ft.Column):
         current_route: Optional[str] = None,
         expanded: Optional[bool] = None,
         dark: Optional[bool] = None,
+        bg: Optional[str] = None,      # ← NUEVO
+        fg: Optional[str] = None,      # ← NUEVO
         force: bool = False,
     ) -> None:
-        """
-        Actualiza modo expandido, tema y colorea completo el botón activo.
-
-        - current_route: ruta efectiva (si None, se conserva la actual).
-        - expanded: True/False para mostrar texto.
-        - dark: True/False para tema.
-        - force: si True, reaplica estilos aunque nada haya cambiado.
-        """
         new_route = (current_route or self._current_route or "/").rstrip("/") or "/"
         changed = force
 
@@ -173,23 +167,28 @@ class MenuButtonsArea(ft.Column):
         if dark is not None and dark != self._dark:
             self._dark = dark
             changed = True
+
+        # ← NUEVO: refrescar paleta base cuando cambie el tema
+        if bg is not None and bg != self._bg:
+            self._bg = bg
+            changed = True
+        if fg is not None and fg != self._fg:
+            self._fg = fg
+            changed = True
+
         if new_route != self._current_route:
             self._current_route = new_route
             changed = True
 
         if not changed:
-            # Nada que repintar
             return
 
         for ctrl in self.controls:
             if not isinstance(ctrl, ft.Container):
                 continue
-
-            # Ruta estable por control (no usar tooltip)
             d = getattr(ctrl, "data", None) or {}
             spec_route = (d.get("route") or "").rstrip("/") or None
             selected = (spec_route == self._current_route)
-
             self._apply_style(ctrl, selected)
 
         print(f"[MenuButtonsArea] 🎨 Estado actualizado → expanded={self._expanded}, dark={self._dark}, route={self._current_route}")
