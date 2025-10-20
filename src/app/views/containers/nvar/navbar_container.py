@@ -13,7 +13,10 @@ _NAV_STORAGE_KEY = "ui.nav.expanded"
 
 class NavBarContainer(ft.Container):
     """
-    Barra lateral compacta y persistente con logging detallado y protección ante referencias circulares.
+    Barra lateral persistente con integración total de tema y layout.
+    - Listener del LayoutController controlado con flag (sin duplicados).
+    - Actualiza color activo según ruta actual.
+    - Mantiene persistencia de expansión y tema.
     """
 
     def __init__(self):
@@ -23,6 +26,7 @@ class NavBarContainer(ft.Container):
         self._mounted: bool = False
         self._pending_route: Optional[str] = None
         self._expanded: bool = False
+        self._listener_registered: bool = False  # ← evita duplicados
 
         # Controladores globales
         self.app = AppState()
@@ -47,8 +51,8 @@ class NavBarContainer(ft.Container):
         self._controls: Optional[ControlButtonsArea] = None
         self._theme_cb: Optional[Callable] = None
 
-        # Listeners
-        self.layout.add_listener(self._on_layout_change)
+        # ❌ Ya NO registramos listener aquí para evitar duplicados
+        # self.layout.ensure_listener(self._on_layout_change)
 
         # Construcción inicial
         print(f"[NavBar] 🧩 Creando NavBarContainer (expandido={self._expanded})")
@@ -61,7 +65,21 @@ class NavBarContainer(ft.Container):
         self._mounted = True
         print("[NavBar] ✅ Montado correctamente")
 
-        # Suscripción al cambio de tema
+        # 🔁 Registrar listener del LayoutController SOLO si no está
+        if not self._listener_registered:
+            try:
+                self.layout.ensure_listener(self._on_layout_change)
+                self._listener_registered = True
+            except Exception as e:
+                print(f"[NavBar] ⚠️ No se pudo registrar listener: {e}")
+
+        try:
+            total = len(getattr(self.layout, "_listeners", []))
+        except Exception:
+            total = "?"
+        print(f"[LayoutController] 👂 Listener activo (registered={self._listener_registered}, total={total})")
+
+        # Suscripción al cambio de tema (sin duplicar)
         if not self._theme_cb:
             self._theme_cb = self._on_theme_change
             self.app.on_theme_change(self._theme_cb)
@@ -70,6 +88,12 @@ class NavBarContainer(ft.Container):
         self.width = self.layout.width(self._w_expanded, self._w_collapsed)
         self.animate = ft.animation.Animation(300, ft.AnimationCurve.EASE_IN_OUT_CUBIC)
         self._apply_palette()
+
+        # 🔄 Re-sincronizar la ruta actual del page si existe
+        page = self.app.get_page()
+        if page and page.route:
+            print(f"[NavBar] 🔄 Ruta detectada en montaje: {page.route}")
+            self.set_current_route(page.route)
 
         # Restaura ruta pendiente
         if self._pending_route:
@@ -82,16 +106,22 @@ class NavBarContainer(ft.Container):
     def will_unmount(self):
         print("[NavBar] 🔻 Desmontando NavBarContainer, limpiando listeners...")
         self._mounted = False
-        try:
-            self.layout.remove_listener(self._on_layout_change)
-        except Exception:
-            pass
+
+        # 🧹 Limpieza segura de listeners y callbacks
+        if self._listener_registered:
+            try:
+                self.layout.remove_listener(self._on_layout_change)
+            except Exception:
+                pass
+            self._listener_registered = False
+
         if self._theme_cb:
             try:
                 self.app.off_theme_change(self._theme_cb)
             except Exception:
                 pass
             self._theme_cb = None
+
         self._menu = None
         self._controls = None
 
@@ -110,7 +140,9 @@ class NavBarContainer(ft.Container):
     def _build_ui(self):
         pal = self.theme_ctrl.get_colors("navbar")
         page = self.app.get_page()
-        current_route = (page.route if page else None) or "/home"
+
+        # ⚠️ No forzar /home aquí; usamos la ruta real si existe.
+        current_route = page.route if page and page.route else None
 
         print(f"[NavBar] 🎨 Construyendo interfaz (route={current_route})")
 
@@ -126,11 +158,10 @@ class NavBarContainer(ft.Container):
             current_route=current_route,
         )
 
-        # Separadores
+        # Separadores y controles inferiores
         divider = ft.Divider(thickness=1, height=14)
         spacer = ft.Container(expand=True)
 
-        # Controles inferiores
         self._controls = ControlButtonsArea(
             theme_ctrl=self.theme_ctrl,
             on_toggle_theme=self._toggle_theme,
@@ -168,12 +199,14 @@ class NavBarContainer(ft.Container):
         if not self._mounted:
             return
 
+        page = self.app.get_page()
+
         if self._menu:
-            page = self.app.get_page()
             self._menu.update_state(
+                current_route=(page.route if page else None),
                 expanded=self._expanded,
                 dark=self.theme_ctrl.is_dark(),
-                current_route=(page.route if page else None),
+                force=True,
             )
         if self._controls:
             self._controls.update_state(expanded=self._expanded)
@@ -203,8 +236,15 @@ class NavBarContainer(ft.Container):
         if not self._mounted:
             return
 
+        page = self.app.get_page()
+
         if self._menu:
-            self._menu.update_state(expanded=self._expanded)
+            # 🔑 Reenviar TODO: expandido + tema + ruta actual para repintado idempotente
+            self._menu.update_state(
+                current_route=(page.route if page else None),
+                expanded=self._expanded,
+                dark=self.theme_ctrl.is_dark(),
+            )
         if self._controls:
             self._controls.update_state(expanded=self._expanded)
 
@@ -231,14 +271,30 @@ class NavBarContainer(ft.Container):
         self.theme_ctrl.toggle()
 
     def _logout(self, *_):
-        print("[NavBar] 🚪 Logout solicitado")
+        print("[NavBar] 🚪 Logout solicitado (guardando cambios y cerrando aplicación)")
         page = self.app.get_page()
+
         try:
+            # Guardar estado actual
+            self.layout.set_state(self._expanded, persist=True)
+            self.app.set_client_value("app.theme", "dark" if self.theme_ctrl.tema_oscuro else "light")
+
+            # Limpiar sesión
             if page:
                 page.client_storage.remove("app.user")
-                page.go("/login")
+
+            print("[NavBar] 💾 Estado guardado y sesión limpiada correctamente.")
+
+            # Cerrar aplicación
+            if page:
+                print("[NavBar] 🪟 Cerrando aplicación...")
+                try:
+                    page.window_destroy()
+                except Exception:
+                    page.window_close()
+
         except Exception as e:
-            print(f"[NavBar] ⚠️ Error al cerrar sesión: {e}")
+            print(f"[NavBar] ⚠️ Error al intentar cerrar sesión: {e}")
 
     # ======================================================
     # API pública
@@ -257,8 +313,11 @@ class NavBarContainer(ft.Container):
     # ======================================================
     def _safe_update(self):
         try:
+            self.update()
+        except Exception:
             page = self.app.get_page()
             if page:
-                page.update()
-        except Exception as e:
-            print(f"[NavBar] ⚠️ Error en safe_update: {e}")
+                try:
+                    page.update()
+                except Exception:
+                    pass

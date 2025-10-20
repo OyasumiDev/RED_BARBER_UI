@@ -1,213 +1,205 @@
-# app/views/containers/nvar/menu_buttons_area.py
 from __future__ import annotations
-
-from typing import Callable, List, Optional, Dict, Any
 import flet as ft
-
+from typing import List, Dict, Any, Callable, Optional
 from app.config.application.app_state import AppState
-from app.config.application.theme_controller import ThemeController
-from app.views.containers.nvar.widgets.nav_button import NavButton
 
 
 class MenuButtonsArea(ft.Column):
     """
-    Menú de navegación usando NavButton.
-    - Expandida: icono + etiqueta
-    - Colapsada: solo icono
-    - Selección por ruta actual (exacta o prefijo)
-    - Paleta: ThemeController.get_colors("navbar")
+    Área de botones de navegación principal (lateral izquierda).
+    - Construye dinámicamente los botones con íconos y rutas.
+    - Cada botón invoca page.go(route) en tiempo real usando AppState.
+    - Soporta modo expandido / colapsado, sincronización de tema y recoloreo robusto.
     """
 
     def __init__(
         self,
-        *,
         expanded: bool,
         dark: bool,
-        # compat (no usados directamente):
-        on_toggle_nav=None,
-        on_toggle_theme=None,
-        on_exit=None,
-        bg: str,                        # solo para mantener firma; no se pasa a NavButton
-        fg: Optional[str] = None,       # solo para mantener firma
-        items: Optional[List[Dict[str, Any]]] = None,
+        bg: str,
+        fg: str,
+        items: List[Dict[str, Any]],
         spacing: int = 10,
-        padding: int = 6,
+        padding: int = 8,
         current_route: Optional[str] = None,
     ):
-        super().__init__(
-            spacing=spacing,
-            expand=False,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        )
-        self.expanded = bool(expanded)
-        self.dark = bool(dark)
-        self.bg = bg
-        self.fg = fg or ft.colors.ON_SURFACE
-        self._padding = padding
-        self._items: List[Dict[str, Any]] = items or []
-        self._current_route: Optional[str] = current_route
+        super().__init__()
+        self.expand = False
+        self.spacing = spacing
+        self.padding = padding
+        self.alignment = ft.MainAxisAlignment.START
+        self.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        self.controls: List[ft.Control] = []
 
-        self._mounted = False
-        self._buttons: List[NavButton] = []
+        self._expanded = expanded
+        self._dark = dark
+        self._bg = bg
+        self._fg = fg
+        self._current_route = (current_route or "/").rstrip("/") or "/"
+        self._items = items
 
-        self.app = AppState()
-        self.page = self.app.get_page()
-        self.theme = ThemeController()
-        self.pal = self.theme.get_colors("navbar")
+        print(f"[MenuButtonsArea] 🧩 Inicializando → expanded={expanded}, dark={dark}, route={self._current_route}")
+        self._build_buttons()
 
-        self.app.on_theme_change(self._on_theme_change)
+    # ============================================================
+    # Construcción de botones
+    # ============================================================
+    def _build_buttons(self):
+        """Construye todos los botones a partir del listado de ítems."""
+        self.controls.clear()
 
-        self._build()
+        for spec in self._items:
+            route = (spec.get("route") or "").rstrip("/") or None
+            label = spec.get("label", "")
+            icon_src = spec.get("icon_src", "")
+            tooltip = spec.get("tooltip", "")
+            key = spec.get("key", "")
 
-    # Ciclo de vida
-    def did_mount(self):
-        self._mounted = True
-        self._apply_state_to_buttons()
-        try:
-            self.update()
-        except Exception:
-            pass
+            # Contenido base
+            row = ft.Row(
+                controls=[
+                    ft.Image(src=icon_src, width=26, height=26, fit=ft.ImageFit.CONTAIN),
+                    ft.Text(label, visible=self._expanded, size=14),
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
 
-    def will_unmount(self):
-        self._mounted = False
-        try:
-            self.app.off_theme_change(self._on_theme_change)
-        except Exception:
-            pass
+            btn = ft.Container(
+                content=row,
+                padding=ft.padding.symmetric(horizontal=8, vertical=6),
+                border_radius=ft.border_radius.all(8),
+                tooltip=tooltip,
+                on_click=self._ensure_on_tap(spec),
+            )
 
-    # API
-    def set_items(self, items: List[Dict[str, Any]]) -> None:
-        self._items = items or []
-        self._build()
-        if self._mounted:
-            self._apply_state_to_buttons()
-            self.update()
+            # 🔐 Metadatos estables para selección
+            btn.data = {"route": route, "key": key}
 
-    def add_item(
-        self,
-        *,
-        icon_src: Optional[str] = None,
-        icon_name: Optional[str] = None,
-        label: str = "",
-        tooltip: Optional[str] = None,
-        on_tap: Optional[Callable] = None,
-        route: Optional[str] = None,
-        selected: Optional[bool] = None,
-        key: Optional[str] = None,
-    ) -> None:
-        self._items.append({
-            "icon_src": icon_src,
-            "icon_name": icon_name,
-            "label": label,
-            "tooltip": tooltip or label,
-            "on_tap": on_tap,
-            "route": route,
-            "selected": selected,
-            "key": key,
-        })
-        self._build()
-        if self._mounted:
-            self._apply_state_to_buttons()
-            self.update()
+            # Estilo inicial según estado seleccionado
+            selected = (route == self._current_route)
+            self._apply_style(btn, selected)
 
+            self.controls.append(btn)
+
+        print(f"[MenuButtonsArea] ✅ {len(self.controls)} botones construidos correctamente.")
+
+    # ============================================================
+    # Estilos
+    # ============================================================
+    def _apply_style(self, ctrl: ft.Container, selected: bool) -> None:
+        """
+        Aplica el estilo a un botón según tema y si está seleccionado.
+        """
+        # Colores base según tema
+        base_bg = "#1E1E1E" if self._dark else "#F6F6F6"
+        base_fg = "#F6F6F6" if self._dark else "#1E1E1E"
+
+        # Colores del activo
+        active_bg = "#D32F2F"  # rojo marca principal
+        active_fg = "#FFFFFF"
+
+        # Contenido esperado: Row[Image, Text]
+        row = ctrl.content
+        txt = None
+        if isinstance(row, ft.Row) and len(row.controls) >= 2 and isinstance(row.controls[1], ft.Text):
+            txt = row.controls[1]
+
+        # Mostrar/ocultar texto según expandido
+        if isinstance(txt, ft.Text):
+            txt.visible = self._expanded
+
+        if selected:
+            ctrl.bgcolor = active_bg
+            if isinstance(txt, ft.Text):
+                txt.color = active_fg
+            ctrl.border = None
+        else:
+            ctrl.bgcolor = base_bg
+            if isinstance(txt, ft.Text):
+                txt.color = base_fg
+            ctrl.border = None
+
+    # ============================================================
+    # Callbacks dinámicos de navegación
+    # ============================================================
+    def _ensure_on_tap(self, spec: Dict[str, Any]) -> Callable:
+        """
+        Devuelve un callback dinámico que obtiene la página activa
+        desde AppState y ejecuta page.go(route) en tiempo real.
+        """
+        route = spec.get("route")
+        if not route:
+            return lambda *_: None
+
+        def _go(_):
+            try:
+                page = AppState().get_page()  # ← obtiene la page actual cada vez
+                if page:
+                    print(f"[MenuButtonsArea] 🚀 Navegando a → {route}")
+                    page.go(route)
+                else:
+                    print(f"[MenuButtonsArea] ⚠️ No se encontró Page activa (AppState vacío)")
+            except Exception as e:
+                print(f"[MenuButtonsArea] ⚠️ Error navegando a {route}: {e}")
+
+        return _go
+
+    # ============================================================
+    # Actualización dinámica del estado visual
+    # ============================================================
     def update_state(
         self,
         *,
+        current_route: Optional[str] = None,
         expanded: Optional[bool] = None,
         dark: Optional[bool] = None,
-        current_route: Optional[str] = None,
-    ):
-        if expanded is not None:
-            self.expanded = bool(expanded)
-        if dark is not None:
-            self.dark = bool(dark)
-        if current_route is not None:
-            self._current_route = current_route
+        force: bool = False,
+    ) -> None:
+        """
+        Actualiza modo expandido, tema y colorea completo el botón activo.
 
-        if not self._mounted:
+        - current_route: ruta efectiva (si None, se conserva la actual).
+        - expanded: True/False para mostrar texto.
+        - dark: True/False para tema.
+        - force: si True, reaplica estilos aunque nada haya cambiado.
+        """
+        new_route = (current_route or self._current_route or "/").rstrip("/") or "/"
+        changed = force
+
+        if expanded is not None and expanded != self._expanded:
+            self._expanded = expanded
+            changed = True
+        if dark is not None and dark != self._dark:
+            self._dark = dark
+            changed = True
+        if new_route != self._current_route:
+            self._current_route = new_route
+            changed = True
+
+        if not changed:
+            # Nada que repintar
             return
 
-        self._apply_state_to_buttons()
-        try:
-            self.update()
-        except Exception:
-            pass
-
-    def set_current_route(self, route: Optional[str]):
-        self._current_route = route
-        if not self._mounted:
-            return
-        self._apply_state_to_buttons()
-        try:
-            self.update()
-        except Exception:
-            pass
-
-    # Internos
-    def _is_selected(self, item: Dict[str, Any]) -> bool:
-        if isinstance(item.get("selected"), bool):
-            return bool(item["selected"])
-        it_route = (item.get("route") or "").strip().rstrip("/")
-        cur_route = (self._current_route or "").strip().rstrip("/")
-        return bool(it_route and cur_route and (cur_route == it_route or cur_route.startswith(it_route + "/")))
-
-    def _on_theme_change(self):
-        self.pal = self.theme.get_colors("navbar")
-        if not self._mounted:
-            return
-        for btn in self._buttons:
-            try:
-                btn.set_palette(self.pal)
-                btn.set_expanded(self.expanded)
-            except AssertionError:
-                pass
-        try:
-            self.update()
-        except Exception:
-            pass
-
-    def _ensure_on_tap(self, spec: Dict[str, Any]) -> Callable:
-        if callable(spec.get("on_tap")):
-            return spec["on_tap"]
-        route = spec.get("route")
-        if route and self.page:
-            def _go(_):
-                try:
-                    self.page.go(route)
-                except Exception:
-                    pass
-            return _go
-        return lambda *_: None
-
-    def _apply_state_to_buttons(self):
-        for btn, spec in zip(self._buttons, self._items):
-            if not btn:
+        for ctrl in self.controls:
+            if not isinstance(ctrl, ft.Container):
                 continue
-            try:
-                btn.set_expanded(self.expanded)
-                btn.set_selected(self._is_selected(spec))
-            except AssertionError:
-                pass
 
-    def _build(self) -> None:
-        self.controls.clear()
-        self._buttons.clear()
-        self.pal = self.theme.get_colors("navbar")
+            # Ruta estable por control (no usar tooltip)
+            d = getattr(ctrl, "data", None) or {}
+            spec_route = (d.get("route") or "").rstrip("/") or None
+            selected = (spec_route == self._current_route)
 
-        for spec in self._items:
-            btn = NavButton(
-                icon_src=spec.get("icon_src"),
-                icon_name=spec.get("icon_name"),
-                label=spec.get("label", ""),
-                tooltip=spec.get("tooltip") or spec.get("label", ""),
-                on_click=self._ensure_on_tap(spec),
-                pal=self.pal,                   # << usa tokens de PaletteFactory
-                expanded=self.expanded,
-                selected=self._is_selected(spec),
-                height=40,
-                radius=8,
-                padding=self._padding,
-                show_label_when_expanded=True,
-            )
-            self._buttons.append(btn)
-            self.controls.append(btn)
+            self._apply_style(ctrl, selected)
+
+        print(f"[MenuButtonsArea] 🎨 Estado actualizado → expanded={self._expanded}, dark={self._dark}, route={self._current_route}")
+        self.update()
+
+    # ============================================================
+    # Cambio manual de ruta (sin redibujar toda la barra)
+    # ============================================================
+    def set_current_route(self, route: str) -> None:
+        """Sincroniza el estado visual con la ruta actual."""
+        route = (route or "/").rstrip("/") or "/"
+        print(f"[MenuButtonsArea] 📍 Sincronizando ruta → {route}")
+        self.update_state(current_route=route)

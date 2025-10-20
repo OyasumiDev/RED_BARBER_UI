@@ -1,6 +1,6 @@
 from __future__ import annotations
 import flet as ft
-from typing import Any, Iterable
+from typing import Any
 from app.helpers.class_singleton import class_singleton
 from app.config.application.app_state import AppState
 from app.config.application.theme_controller import ThemeController
@@ -24,6 +24,10 @@ class WindowMain:
         self._nav_host: ft.Container | None = None
         self._content_host: ft.Container | None = None
         self._current_module: str | None = None
+
+        # Flags
+        self._navbar_initialized: bool = False
+        self._shell_ready: bool = False  # ⬅️ Shell persistente
 
     # =========================================================
     # Entry point
@@ -63,9 +67,62 @@ class WindowMain:
         self._page.window.center()
 
     # =========================================================
+    # Shell persistente (Nav + Content)
+    # =========================================================
+    def _ensure_shell(self):
+        if self._shell_ready:
+            return
+
+        nav_colors = self.theme_ctrl.get_colors("navbar")
+        content_colors = self.theme_ctrl.get_colors(self._current_module or "home")
+        app = AppState()
+
+        # Crear NavBar si no existe
+        if not self.nav_bar:
+            print("🧩 [NAV] Creando NavBarContainer inicial (shell)...")
+            self.nav_bar = NavBarContainer()
+            self._navbar_initialized = True
+
+        # Hosts persistentes
+        self._nav_host = ft.Container(
+            content=self.nav_bar,
+            expand=False,
+            bgcolor=nav_colors.get("BG_COLOR"),
+        )
+        self._content_host = ft.Container(
+            content=ft.Column([], expand=True, scroll=ft.ScrollMode.AUTO),
+            expand=True,
+            bgcolor=content_colors.get("BG_COLOR"),
+        )
+
+        layout_row = ft.Row(
+            controls=[self._nav_host, self._content_host],
+            expand=True,
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+            alignment=ft.MainAxisAlignment.START,
+        )
+
+        self.content_area.content = ft.Container(
+            content=layout_row,
+            expand=True,
+            bgcolor=content_colors.get("BG_COLOR"),
+        )
+
+        app.set("content_container", self._content_host)
+        app.set("nav_container", self.nav_bar)
+
+        self._shell_ready = True
+        print("🧱 [SHELL] Estructura persistente creada.")
+
+    # =========================================================
     # Sanitización profunda (evita ciclos de referencia)
     # =========================================================
     def _sanitize_control_tree(self, root: ft.Control | None):
+        """
+        Limpieza segura del árbol de controles SIN tocar `control.data`,
+        porque se usa para mapear rutas en el menú lateral.
+        """
         if not root:
             return
         visited = set()
@@ -77,11 +134,9 @@ class WindowMain:
             if cid in visited:
                 return
             visited.add(cid)
-            try:
-                if hasattr(c, "data"):
-                    c.data = None
-            except Exception:
-                pass
+
+            # ⚠️ Importante: NO limpiar c.data. Se usa para route mapping.
+            # if hasattr(c, "data"): c.data = None
 
             for attr in ("content", "controls"):
                 val = getattr(c, attr, None)
@@ -93,7 +148,7 @@ class WindowMain:
                             _walk(x)
 
         _walk(root)
-        print("🧹 [SANITIZE] Árbol de controles limpiado correctamente.")
+        print("🧹 [SANITIZE] Árbol de controles limpiado (data preservada).")
 
     def _pre_update_sanitize(self):
         try:
@@ -162,13 +217,12 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            print(f"⚠️ [ROUTE] Ruta no reconocida: {path}")
-            self._current_module = "home"
-            self._set_content(
-                [ft.Text("Vista no encontrada", size=20, color=ft.colors.RED_400)],
-                use_navbar=True,
-            )
-            self._sync_nav_selection("/home")
+            # Ruta no reconocida → redirigir a /home para no desincronizar UI/URL
+            print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
+            if self._page:
+                self._page.go("/home")
+            return
+
         except Exception as e:
             print(f"❌ [ROUTE] Error manejando ruta {path}: {e}")
 
@@ -187,51 +241,27 @@ class WindowMain:
     def _set_content(self, controls: list[ft.Control], use_navbar: bool = True):
         print(f"🔧 [SET_CONTENT] Montando vista (use_navbar={use_navbar}, módulo={self._current_module})")
         try:
-            nav_colors = self.theme_ctrl.get_colors("navbar")
-            content_colors = self.theme_ctrl.get_colors(self._current_module or "home")
             app = AppState()
 
-            # Asegurar hosts limpios
-            self._nav_host = None
-            self._content_host = None
-
             if use_navbar:
-                # Reutiliza la misma barra (no se recrea)
-                if not self.nav_bar:
-                    print("🧩 [NAV] Creando NavBarContainer inicial...")
-                    self.nav_bar = NavBarContainer()
-                else:
-                    print("🔁 [NAV] Reutilizando NavBarContainer existente")
+                # 👉 Shell persistente: crea una sola vez y solo cambia el panel derecho
+                self._ensure_shell()
 
-                self._nav_host = ft.Container(
-                    content=self.nav_bar,
-                    expand=False,
-                    bgcolor=nav_colors.get("BG_COLOR"),
-                )
-                self._content_host = ft.Container(
-                    content=ft.Column(controls, expand=True, scroll=ft.ScrollMode.AUTO),
-                    expand=True,
-                    bgcolor=content_colors.get("BG_COLOR"),
-                )
+                colors = self.theme_ctrl.get_colors(self._current_module or "home")
+                if self._content_host:
+                    self._content_host.bgcolor = colors.get("BG_COLOR")
+                    self._content_host.content = ft.Column(controls, expand=True, scroll=ft.ScrollMode.AUTO)
 
-                layout_row = ft.Row(
-                    controls=[self._nav_host, self._content_host],
-                    expand=True,
-                    spacing=0,
-                    vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-                    alignment=ft.MainAxisAlignment.START,
-                )
-
-                self.content_area.content = ft.Container(
-                    content=layout_row,
-                    expand=True,
-                    bgcolor=content_colors.get("BG_COLOR"),
-                )
                 app.set("content_container", self._content_host)
                 app.set("nav_container", self.nav_bar)
 
-                self._sync_nav_selection(self._current_route_str("/home"))
             else:
+                # Vista sin barra (p. ej., login). Podemos “apagar” el shell.
+                self._shell_ready = False
+                self._nav_host = None
+                self._content_host = None
+
+                content_colors = self.theme_ctrl.get_colors(self._current_module or "home")
                 self.content_area.content = ft.Container(
                     content=ft.Column(
                         controls=controls,
