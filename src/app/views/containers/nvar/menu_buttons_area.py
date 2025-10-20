@@ -91,12 +91,12 @@ class MenuButtonsArea(ft.Column):
         """
         Aplica el estilo a un botón según tema y si está seleccionado.
         """
-        # Colores base según tema
-        base_bg = "#1E1E1E" if self._dark else "#F6F6F6"
-        base_fg = "#F6F6F6" if self._dark else "#1E1E1E"
+        # Colores base desde paleta (heredados del Nav)
+        base_bg = self._bg or ("#1E1E1E" if self._dark else "#F6F6F6")
+        base_fg = self._fg or ("#F6F6F6" if self._dark else "#1E1E1E")
 
-        # Colores del activo
-        active_bg = "#D32F2F"  # rojo marca principal
+        # Colores del activo (marca)
+        active_bg = "#D32F2F"
         active_fg = "#FFFFFF"
 
         # Contenido esperado: Row[Image, Text]
