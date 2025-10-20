@@ -1,234 +1,264 @@
-# app/views/containers/nvar/navbar_container.py
+from __future__ import annotations
 import flet as ft
-from app.views.containers.nvar.menu_buttons_area import MenuButtonsArea
-from app.views.containers.nvar.user_icon_area import UserIconArea
-from app.views.containers.nvar.layout_controller import LayoutController
-from app.config.application.theme_controller import ThemeController
-from app.views.containers.nvar.control_buttons_area import ControlButtonsArea
-from app.views.containers.nvar.quick_nav_area import QuickNavArea
+from typing import Optional, Callable, List, Dict, Any
+
 from app.config.application.app_state import AppState
+from app.config.application.theme_controller import ThemeController
+from app.views.containers.nvar.layout_controller import LayoutController
+from app.views.containers.nvar.menu_buttons_area import MenuButtonsArea
+from app.views.containers.nvar.control_buttons_area import ControlButtonsArea
+
+_NAV_STORAGE_KEY = "ui.nav.expanded"
 
 
 class NavBarContainer(ft.Container):
     """
-    Barra lateral principal:
-      [UserIconArea]
-      [QuickNavArea]      ← acceso rápido
-      [Divider]
-      [MenuButtonsArea]   ← módulos principales
-      ----------------------------
-      [ControlButtonsArea] ← abajo (tema, salir)
+    Barra lateral compacta y persistente con logging detallado y protección ante referencias circulares.
     """
 
-    def __init__(self, is_root: bool = False):
-        super().__init__(padding=10, expand=True)
+    def __init__(self):
+        super().__init__(expand=False, padding=8)
 
-        self.is_root = is_root
-        self.layout_ctrl = LayoutController()
+        # Estado interno
+        self._mounted: bool = False
+        self._pending_route: Optional[str] = None
+        self._expanded: bool = False
+
+        # Controladores globales
+        self.app = AppState()
         self.theme_ctrl = ThemeController()
-        self.app_state = AppState()
+        self.layout = LayoutController()
 
-        # Estado inicial
-        self.expanded = self.layout_ctrl.is_expanded()
-        self.dark = self.theme_ctrl.is_dark()
+        # Leer estado expandido persistido
+        try:
+            self._expanded = self.layout.is_expanded()
+            stored = self.app.get_client_value(_NAV_STORAGE_KEY, None)
+            if isinstance(stored, bool):
+                self._expanded = stored
+        except Exception as e:
+            print(f"[NavBar] ⚠️ No se pudo leer estado inicial expandido: {e}")
 
-        # Flags
-        self._mounted = False
-        self._theme_listener = None  # guardamos callback para evitar múltiples suscripciones
+        # Config visual
+        self._w_expanded = 220
+        self._w_collapsed = 76
+
+        # Subcomponentes
+        self._menu: Optional[MenuButtonsArea] = None
+        self._controls: Optional[ControlButtonsArea] = None
+        self._theme_cb: Optional[Callable] = None
+
+        # Listeners
+        self.layout.add_listener(self._on_layout_change)
 
         # Construcción inicial
-        self._build()
+        print(f"[NavBar] 🧩 Creando NavBarContainer (expandido={self._expanded})")
+        self._build_ui()
 
-        # Suscripción a cambios de tema (una sola vez)
-        self._register_theme_listener()
-
-    # --------------------
+    # ======================================================
     # Ciclo de vida
-    # --------------------
+    # ======================================================
     def did_mount(self):
-        """Se llama automáticamente cuando el control se monta en la Page."""
         self._mounted = True
-        self._apply_current_palette()
+        print("[NavBar] ✅ Montado correctamente")
+
+        # Suscripción al cambio de tema
+        if not self._theme_cb:
+            self._theme_cb = self._on_theme_change
+            self.app.on_theme_change(self._theme_cb)
+
+        # Ajustes visuales
+        self.width = self.layout.width(self._w_expanded, self._w_collapsed)
+        self.animate = ft.animation.Animation(300, ft.AnimationCurve.EASE_IN_OUT_CUBIC)
+        self._apply_palette()
+
+        # Restaura ruta pendiente
+        if self._pending_route:
+            print(f"[NavBar] 🔄 Aplicando ruta pendiente: {self._pending_route}")
+            self.set_current_route(self._pending_route)
+            self._pending_route = None
+
         self._safe_update()
 
     def will_unmount(self):
-        """Se llama automáticamente al desmontarse del árbol."""
+        print("[NavBar] 🔻 Desmontando NavBarContainer, limpiando listeners...")
         self._mounted = False
-        self._unregister_theme_listener()
-
-    # --------------------
-    # Listeners de tema
-    # --------------------
-    def _register_theme_listener(self):
-        """
-        Registra el callback en AppState si existe y no se ha registrado aún.
-        Evita listeners duplicados si la navbar se reconstruye por ruteo.
-        """
-        if self._theme_listener is not None:
-            return  # ya está
-        cb = self._on_theme_changed
-        # on_theme_change debe aceptar un call-able; si AppState devuelve un id úsalo si lo tienes.
         try:
-            self.app_state.on_theme_change(cb)
-            self._theme_listener = cb
-        except Exception:
-            # Si tu AppState no implementa esto, no fallamos.
-            self._theme_listener = None
-
-    def _unregister_theme_listener(self):
-        if self._theme_listener is None:
-            return
-        try:
-            # off_theme_change debe aceptar el mismo callable
-            self.app_state.off_theme_change(self._theme_listener)  # type: ignore[attr-defined]
+            self.layout.remove_listener(self._on_layout_change)
         except Exception:
             pass
-        self._theme_listener = None
+        if self._theme_cb:
+            try:
+                self.app.off_theme_change(self._theme_cb)
+            except Exception:
+                pass
+            self._theme_cb = None
+        self._menu = None
+        self._controls = None
 
-    # --------------------
-    # Build visual
-    # --------------------
-    def _build(self):
-        colors = self.theme_ctrl.get_colors()
+    # ======================================================
+    # Construcción UI
+    # ======================================================
+    def _menu_items(self) -> List[Dict[str, Any]]:
+        return [
+            {"icon_src": "assets/buttons/user-manager-area-button.png", "label": "Mi perfil", "tooltip": "Usuario actual", "route": None, "key": "usuario"},
+            {"icon_src": "assets/buttons/home-area-button.png", "label": "Inicio", "tooltip": "Ir a inicio", "route": "/home", "key": "home"},
+            {"icon_src": "assets/buttons/employees-button.png", "label": "Trabajadores", "tooltip": "Gestión de trabajadores", "route": "/trabajadores", "key": "trabajadores"},
+            {"icon_src": "assets/buttons/inventario-area-button.png", "label": "Inventario", "tooltip": "Gestión de inventario", "route": "/inventario", "key": "inventario"},
+            {"icon_src": "assets/buttons/settings-button.png", "label": "Configuración", "tooltip": "Ajustes del sistema", "route": "/configuracion", "key": "configuracion"},
+        ]
 
-        # Ancho / fondo según estado
-        self.width = 220 if self.expanded else 80
-        self.bgcolor = colors.get("BG_COLOR", ft.colors.SURFACE)
+    def _build_ui(self):
+        pal = self.theme_ctrl.get_colors("navbar")
+        page = self.app.get_page()
+        current_route = (page.route if page else None) or "/home"
 
-        # Área superior: avatar / usuario
-        user_area = UserIconArea(
-            is_root=self.is_root,
-            accent=colors.get("AVATAR_ACCENT", ft.colors.PRIMARY),
-            nav_width=self.width,
-            expanded=self.expanded,
+        print(f"[NavBar] 🎨 Construyendo interfaz (route={current_route})")
+
+        # Menú lateral
+        self._menu = MenuButtonsArea(
+            expanded=self._expanded,
+            dark=self.theme_ctrl.is_dark(),
+            bg=pal.get("ITEM_BG", pal.get("BTN_BG", ft.colors.GREY_200)),
+            fg=pal.get("ITEM_FG", ft.colors.ON_SURFACE),
+            items=self._menu_items(),
+            spacing=10,
+            padding=8,
+            current_route=current_route,
         )
 
-        # Acceso rápido (Ej. Empleados)
-        quick_area = QuickNavArea(
-            expanded=self.expanded,
-            bg=colors.get("BTN_BG", ft.colors.SURFACE_VARIANT),
-            fg=colors.get("FG_COLOR", ft.colors.BLACK),
-            on_employees=lambda e: self._go_empleados(),
-            mostrar_empleados=True,
+        # Separadores
+        divider = ft.Divider(thickness=1, height=14)
+        spacer = ft.Container(expand=True)
+
+        # Controles inferiores
+        self._controls = ControlButtonsArea(
+            theme_ctrl=self.theme_ctrl,
+            on_toggle_theme=self._toggle_theme,
+            on_toggle_expand=self._toggle_expand,
+            on_logout=self._logout,
+            expanded=self._expanded,
+            spacing=10,
         )
 
-        # Menú principal
-        menu_area = MenuButtonsArea(
-            expanded=self.expanded,
-            dark=self.dark,
-            on_toggle_nav=None,     # compatibilidad
-            on_toggle_theme=None,
-            on_exit=None,
-            bg=colors.get("BTN_BG", ft.colors.SURFACE_VARIANT),
-        )
-
-        # Stack superior (contenido dinámico)
-        top_stack = ft.Column(
-            controls=[
-                user_area,
-                quick_area,
-                ft.Divider(color=colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)),
-                menu_area,
-            ],
-            spacing=8,
-            expand=True,
-        )
-
-        # Controles inferiores (expandir / tema / salir)
-        control_area = ControlButtonsArea(
-            expanded=self.expanded,
-            dark=self.dark,
-            on_toggle_nav=self.toggle_nav,
-            on_toggle_theme=self.toggle_theme,
-            on_settings=None,
-            on_exit=self.exit_app,
-            bg=colors.get("BTN_BG", ft.colors.SURFACE_VARIANT),
-            mostrar_theme=True,
-        )
-
+        # Layout principal
         self.content = ft.Column(
-            controls=[top_stack, control_area],
-            spacing=12,
+            controls=[self._menu, divider, spacer, self._controls],
+            spacing=10,
             expand=True,
+            alignment=ft.MainAxisAlignment.START if self._expanded else ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH if self._expanded else ft.CrossAxisAlignment.CENTER,
         )
 
-    # --------------------
-    # Navegación
-    # --------------------
-    def _go_empleados(self):
-        page = self.app_state.page
-        if page:
-            page.go("/trabajadores")
+        self.width = self.layout.width(self._w_expanded, self._w_collapsed)
+        self.bgcolor = pal.get("BG_COLOR")
+        self.animate = ft.animation.Animation(300, ft.AnimationCurve.EASE_IN_OUT_CUBIC)
 
-    # --------------------
-    # Eventos de tema
-    # --------------------
-    def _apply_current_palette(self):
-        """Aplica el fondo actual de la paleta y sincroniza bandera dark."""
-        colors = self.theme_ctrl.get_colors()
-        self.dark = self.theme_ctrl.is_dark()
-        self.bgcolor = colors.get("BG_COLOR", self.bgcolor)
+    # ======================================================
+    # Paleta / Tema
+    # ======================================================
+    def _apply_palette(self):
+        pal = self.theme_ctrl.get_colors("navbar")
+        self.bgcolor = pal.get("BG_COLOR")
 
-    def _on_theme_changed(self):
-        """Callback llamado por AppState cuando cambia el tema global."""
-        # Relee paleta y reconstruye con los colores correctos
-        self._apply_current_palette()
-        self._build()
+        if isinstance(self.content, ft.Column):
+            for ctrl in self.content.controls:
+                if isinstance(ctrl, ft.Divider):
+                    ctrl.color = pal.get("DIVIDER_COLOR")
+
+        if not self._mounted:
+            return
+
+        if self._menu:
+            page = self.app.get_page()
+            self._menu.update_state(
+                expanded=self._expanded,
+                dark=self.theme_ctrl.is_dark(),
+                current_route=(page.route if page else None),
+            )
+        if self._controls:
+            self._controls.update_state(expanded=self._expanded)
+
+        print(f"[NavBar] 🎨 Paleta aplicada (modo={'oscuro' if self.theme_ctrl.is_dark() else 'claro'})")
+
+    # ======================================================
+    # Eventos / Listeners
+    # ======================================================
+    def _on_theme_change(self):
+        if not self._mounted:
+            return
+        print("[NavBar] 🎨 Cambio de tema detectado → reaplicando paleta")
+        self._apply_palette()
         self._safe_update()
 
-    # --------------------
-    # Callbacks
-    # --------------------
-    def toggle_nav(self, e=None):
-        """Expande o contrae la barra lateral."""
-        self.layout_ctrl.toggle()
-        self.expanded = self.layout_ctrl.is_expanded()
-        self._build()
+    def _on_layout_change(self, expanded: bool):
+        self._expanded = bool(expanded)
+        self.width = self.layout.width(self._w_expanded, self._w_collapsed)
+        print(f"[NavBar] 🔄 Cambio de layout → expandido={self._expanded}")
+
+        try:
+            self.app.set_client_value(_NAV_STORAGE_KEY, self._expanded)
+        except Exception:
+            pass
+
+        if not self._mounted:
+            return
+
+        if self._menu:
+            self._menu.update_state(expanded=self._expanded)
+        if self._controls:
+            self._controls.update_state(expanded=self._expanded)
+
+        # Ajuste visual de centrado
+        if isinstance(self.content, ft.Column):
+            self.content.alignment = (
+                ft.MainAxisAlignment.START if self._expanded else ft.MainAxisAlignment.CENTER
+            )
+            self.content.horizontal_alignment = (
+                ft.CrossAxisAlignment.STRETCH if self._expanded else ft.CrossAxisAlignment.CENTER
+            )
+
         self._safe_update()
 
-    def toggle_theme(self, e=None):
-        """
-        Alterna el tema global.
-        NOTA: no forzamos rebuild aquí; el listener _on_theme_changed lo hará,
-        evitando condiciones de carrera y actualizaciones dobles.
-        """
+    # ======================================================
+    # Acciones inferiores
+    # ======================================================
+    def _toggle_expand(self, *_):
+        print(f"[NavBar] 🔘 Toggle expand/collapse (actual={self._expanded})")
+        self.layout.toggle(persist=True)
+
+    def _toggle_theme(self, *_):
+        print("[NavBar] 🌗 Toggle de tema solicitado")
         self.theme_ctrl.toggle()
 
-    def exit_app(self, e=None):
-        """Cierra sesión y la ventana principal."""
-        page = self.app_state.page
-        if not page:
+    def _logout(self, *_):
+        print("[NavBar] 🚪 Logout solicitado")
+        page = self.app.get_page()
+        try:
+            if page:
+                page.client_storage.remove("app.user")
+                page.go("/login")
+        except Exception as e:
+            print(f"[NavBar] ⚠️ Error al cerrar sesión: {e}")
+
+    # ======================================================
+    # API pública
+    # ======================================================
+    def set_current_route(self, route: str):
+        print(f"[NavBar] 📍 Sincronizando ruta actual → {route}")
+        if not self._mounted:
+            self._pending_route = route
             return
-        # Limpia sesión
-        try:
-            page.client_storage.remove("app.user")
-        except Exception:
-            pass
+        if self._menu:
+            self._menu.set_current_route(route)
+        self._safe_update()
 
-        self.layout_ctrl.set(False)
-        try:
-            self.theme_ctrl.apply_theme()
-        except Exception:
-            pass
-
-        try:
-            page.window_close()
-        except Exception:
-            pass
-
-    # --------------------
+    # ======================================================
     # Utilidades
-    # --------------------
+    # ======================================================
     def _safe_update(self):
-        """
-        Actualiza de forma segura: solo cuando el control ya fue agregado a la Page.
-        Evitamos forzar page.update() desde aquí para no provocar renders globales.
-        """
-        if getattr(self, "page", None) is None:
-            return
         try:
-            self.update()
-        except AssertionError:
-            # Si por alguna razón aún no está montado, no forzamos nada.
-            pass
-
+            page = self.app.get_page()
+            if page:
+                page.update()
+        except Exception as e:
+            print(f"[NavBar] ⚠️ Error en safe_update: {e}")

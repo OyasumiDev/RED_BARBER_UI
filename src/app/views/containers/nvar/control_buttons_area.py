@@ -1,105 +1,146 @@
 # app/views/containers/nvar/control_buttons_area.py
+from __future__ import annotations
 
 import flet as ft
+from typing import Optional, Callable
+
+from app.config.application.app_state import AppState
+from app.config.application.theme_controller import ThemeController
+from app.views.containers.nvar.widgets.nav_button import NavButton
 
 
 class ControlButtonsArea(ft.Column):
     """
-    Controles globales anclados abajo:
+    Controles anclados abajo:
       - Expandir/Contraer
       - Cambiar tema
       - Salir
+    Usa NavButton para unificar formato con los botones de menú.
     """
+
     def __init__(
         self,
-        expanded: bool,
-        dark: bool,
-        on_toggle_nav,
-        on_toggle_theme,
-        on_settings,      # reservado (compatibilidad futura)
-        on_exit,
-        bg: str,
-        mostrar_settings: bool = True,  # reservado
+        theme_ctrl: ThemeController,
+        on_toggle_theme: Callable,
+        on_toggle_expand: Callable,
+        on_logout: Callable,
+        *,
+        expanded: Optional[bool] = None,
         mostrar_theme: bool = True,
         spacing: int = 10,
-        padding: int = 6,
     ):
-        super().__init__(spacing=spacing)
+        super().__init__(spacing=spacing, expand=False, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
-        self.expanded = expanded
-        self.dark = dark
-        self.on_toggle_nav = on_toggle_nav
-        self.on_toggle_theme = on_toggle_theme
-        self.on_settings = on_settings
-        self.on_exit = on_exit
-        self.bg = bg
-        self.mostrar_settings = mostrar_settings
+        self.theme = theme_ctrl
+        self.app = AppState()
+        self.page = self.app.get_page()
+        self.pal = self.theme.get_colors("navbar")
+
+        self.expanded = bool(expanded) if expanded is not None else False
         self.mostrar_theme = mostrar_theme
-        self._padding = padding
+
+        self.on_toggle_theme = on_toggle_theme
+        self.on_toggle_expand = on_toggle_expand
+        self.on_logout = on_logout
+
+        self._btn_expand: Optional[NavButton] = None
+        self._btn_theme: Optional[NavButton] = None
+        self._btn_exit: Optional[NavButton] = None
+
+        # Recoloreo automático con cambios de tema
+        self.app.on_theme_change(self._on_theme_change)
 
         self._build()
 
+    # ---------------- icons dinámicos ----------------
+    def _icon_theme(self) -> str:
+        # Usa tus assets existentes
+        return "assets/buttons/light-color-button.png" if self.theme.is_dark() else "assets/buttons/dark-color-button.png"
+
+    def _icon_expand(self) -> str:
+        return "assets/buttons/layout_close-button.png" if self.expanded else "assets/buttons/layout_open-button.png"
+
+    # ---------------- UI ----------------
     def _build(self):
-        controls: list[ft.Control] = []
+        self.controls.clear()
 
-        # Expandir/Contraer
-        expand_icon = (
-            "assets/buttons/layout_close-button.png"
-            if self.expanded else "assets/buttons/layout_open-button.png"
+        # Expand / Collapse
+        self._btn_expand = NavButton(
+            icon_src=self._icon_expand(),
+            label="Contraer" if self.expanded else "Expandir",
+            tooltip="Contraer" if self.expanded else "Expandir",
+            on_click=lambda e: self.on_toggle_expand(),
+            pal=self.pal,
+            expanded=self.expanded,
+            selected=False,
+            height=40,
+            radius=8,
+            padding=8,
+            show_label_when_expanded=True,
         )
-        btn_expand = ft.GestureDetector(
-            on_tap=self.on_toggle_nav,
-            content=ft.Container(
-                bgcolor=self.bg,
-                padding=self._padding,
-                border_radius=6,
-                content=ft.Image(src=expand_icon, width=24, height=24),
-                tooltip="Contraer" if self.expanded else "Expandir",
-            ),
-        )
-        controls.append(btn_expand)
+        self.controls.append(self._btn_expand)
 
-        # Tema (opcional)
+        # Theme toggle
         if self.mostrar_theme:
-            theme_icon = (
-                "assets/buttons/light-color-button.png"
-                if self.dark else "assets/buttons/dark-color-button.png"
+            self._btn_theme = NavButton(
+                icon_src=self._icon_theme(),
+                label="Tema",
+                tooltip="Cambiar tema",
+                on_click=lambda e: self.on_toggle_theme(),
+                pal=self.pal,
+                expanded=self.expanded,
+                selected=False,
+                height=40,
+                radius=8,
+                padding=8,
+                show_label_when_expanded=True,
             )
-            btn_theme = ft.GestureDetector(
-                on_tap=self.on_toggle_theme,
-                content=ft.Container(
-                    bgcolor=self.bg,
-                    padding=self._padding,
-                    border_radius=6,
-                    content=ft.Image(src=theme_icon, width=24, height=24),
-                    tooltip="Cambiar tema",
-                ),
-            )
-            controls.append(btn_theme)
+            self.controls.append(self._btn_theme)
 
-        # (Opcional) Settings en el futuro
-        # if self.mostrar_settings:
-        #     controls.append(...)
-
-        # Salir
-        btn_exit = ft.GestureDetector(
-            on_tap=self.on_exit,
-            content=ft.Container(
-                bgcolor=self.bg,
-                padding=self._padding,
-                border_radius=6,
-                content=ft.Image(src="assets/buttons/exit-button.png", width=24, height=24),
-                tooltip="Salir",
-            ),
+        # Logout
+        self._btn_exit = NavButton(
+            icon_src="assets/buttons/exit-button.png",
+            label="Salir",
+            tooltip="Cerrar sesión",
+            on_click=lambda e: self.on_logout(),
+            pal=self.pal,
+            expanded=self.expanded,
+            selected=False,
+            height=40,
+            radius=8,
+            padding=8,
+            show_label_when_expanded=True,
         )
-        controls.append(btn_exit)
+        self.controls.append(self._btn_exit)
 
-        self.controls = controls
-
-    def update_state(self, expanded: bool | None = None, dark: bool | None = None):
+    # ---------------- API pública ----------------
+    def update_state(self, *, expanded: Optional[bool] = None):
         if expanded is not None:
-            self.expanded = expanded
-        if dark is not None:
-            self.dark = dark
-        self._build()
+            self.expanded = bool(expanded)
+
+        if self._btn_expand:
+            self._btn_expand.set_expanded(self.expanded)
+            self._btn_expand.set_icon_src(self._icon_expand())
+            self._btn_expand.set_label("Contraer" if self.expanded else "Expandir")
+        if self._btn_theme:
+            self._btn_theme.set_expanded(self.expanded)
+        if self._btn_exit:
+            self._btn_exit.set_expanded(self.expanded)
+
         self.update()
+
+    # ---------------- Theme sync ----------------
+    def _on_theme_change(self):
+        self.pal = self.theme.get_colors("navbar")
+        for b in (self._btn_expand, self._btn_theme, self._btn_exit):
+            if b:
+                b.set_palette(self.pal)
+        if self._btn_theme:
+            self._btn_theme.set_icon_src(self._icon_theme())
+        self.update()
+
+    def will_unmount(self):
+        try:
+            self.app.off_theme_change(self._on_theme_change)
+        except Exception:
+            pass

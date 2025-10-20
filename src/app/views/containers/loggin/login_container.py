@@ -1,31 +1,35 @@
 # app/views/containers/loggin/login_container.py
-
 from __future__ import annotations
 
+import traceback
 import flet as ft
 from app.models.usuarios_model import UsuariosModel
 from app.core.enums.e_usuarios import E_USUARIOS, E_USER_ESTADO
 from app.config.application.app_state import AppState
 from app.config.application.theme_controller import ThemeController
-from app.config.application.settings_app import SettingsApp  # ⬅️ NUEVO
+
 
 class LoginContainer(ft.Container):
-    def __init__(self):
-        self.theme: ThemeController = ThemeController()
-        self._theme_token = None
+    """
+    Pantalla de inicio de sesión.
+    - Aplica paletas desde ThemeController/PaletteFactory (área "login" + global).
+    - Tras autenticar, redirige según rol (default: /trabajadores).
+    """
 
-        super().__init__(
-            expand=True,
-            alignment=ft.alignment.center,
-        )
+    def __init__(self):
+        # ⚠️ No uses atributo `theme` en controles Flet; usa ThemeController.
+        self.theme_ctrl: ThemeController = ThemeController()
+        super().__init__(expand=True, alignment=ft.alignment.center)
         self.page: ft.Page | None = None
 
         self.user_model = UsuariosModel()
 
+        # Assets
         self._logo_light_src = "logos/red.png"
         self._logo_dark_src = "logos/red.png"
         self.logo = ft.Image(src=self._logo_light_src, width=250, height=250)
 
+        # Campos
         self.user_field = ft.TextField(
             label="Usuario",
             prefix_icon=ft.icons.PERSON,
@@ -40,8 +44,12 @@ class LoginContainer(ft.Container):
             width=300,
             on_submit=self.on_login,
         )
-        self.login_message = ft.Text(size=14)
 
+        # Feedback
+        self.login_message = ft.Text(size=14, selectable=False)
+        self.progress = ft.ProgressBar(width=300, visible=False)
+
+        # Botón
         self.login_button = ft.ElevatedButton(
             "Iniciar sesión",
             on_click=self.on_login,
@@ -50,6 +58,7 @@ class LoginContainer(ft.Container):
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
         )
 
+        # Card
         self.card = ft.Container(
             width=400,
             padding=30,
@@ -60,180 +69,192 @@ class LoginContainer(ft.Container):
                     ft.Text("Iniciar sesión", size=22, weight="bold"),
                     self.user_field,
                     self.password_field,
+                    self.progress,
                     self.login_button,
                     self.login_message,
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 alignment=ft.MainAxisAlignment.CENTER,
-                spacing=20,
+                spacing=16,
             ),
         )
 
+        # Layout raíz
         self.content = ft.Column(
             [ft.Row([self.card], alignment=ft.MainAxisAlignment.CENTER)],
             alignment=ft.MainAxisAlignment.CENTER,
             expand=True,
         )
 
-        # ⬅️ Boot inicial desde Settings persistido ANTES de pintar colores
-        self._boot_from_settings()
-        self._apply_theme()
+        # ⛔️ No llamamos self._apply_theme() aquí para evitar "Control must be added to the page first".
+        # El tema se aplica en did_mount().
 
-    # ===================== THEME INTEGRATION =====================
-
-    def _boot_from_settings(self):
-        """Lee el modo desde SettingsApp y lo propaga a Page y ThemeController."""
-        try:
-            mode = (SettingsApp().get("theme", "light") or "light").lower()
-            p = AppState().page
-            if p:
-                p.theme_mode = ft.ThemeMode.DARK if mode == "dark" else ft.ThemeMode.LIGHT
-            # Notificar al ThemeController si expone setters
-            if hasattr(self.theme, "set_mode"):
-                self.theme.set_mode(mode)  # espera "dark"/"light"
-            elif hasattr(self.theme, "apply"):
-                self.theme.apply(mode)
-            elif hasattr(self.theme, "is_dark") and not callable(getattr(self.theme, "is_dark")):
-                # si es propiedad booleana
-                try:
-                    self.theme.is_dark = (mode == "dark")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _c(self, key: str, default: str) -> str:
-        tc = self.theme
-        val = None
-        try:
-            if hasattr(tc, "get_color"):
-                val = tc.get_colors(key)
-            elif hasattr(tc, "color"):
-                val = tc.color(key)
-            elif hasattr(tc, "get"):
-                val = tc.get(key)
-            elif hasattr(tc, "palette") and isinstance(tc.palette, dict):
-                val = tc.palette.get(key)
-        except Exception:
-            val = None
-        return val or default
-
+    # ===================== THEME =====================
     def _is_dark(self) -> bool:
-        # 1) Settings persistido
         try:
-            mode = SettingsApp().get("theme", None)
-            if isinstance(mode, str) and mode.lower() == "dark":
-                return True
+            return bool(self.theme_ctrl.is_dark())
         except Exception:
-            pass
-        # 2) ThemeController / Page
-        tc = self.theme
-        try:
-            if hasattr(tc, "is_dark") and callable(tc.is_dark):
-                return bool(tc.is_dark())
-            if hasattr(tc, "mode"):
-                return str(tc.mode).lower() == "dark"
-            if hasattr(tc, "theme_mode"):
-                return str(tc.theme_mode).lower() == "dark"
-        except Exception:
-            pass
-        try:
-            p = AppState().page
-            if p and p.theme and getattr(p.theme, "brightness", None):
-                return str(p.theme.brightness).lower() == "dark"
-        except Exception:
-            pass
-        return False
+            return False
 
     def _apply_theme(self):
-        self.bgcolor = self._c("background", self._c("bg", ft.colors.GREY_50))
+        """Aplica colores a la vista. No hace self.update() si aún no hay page."""
+        pal = self.theme_ctrl.get_colors("login")
+        global_pal = self.theme_ctrl.get_colors()
 
-        self.card.bgcolor = self._c("surface", self._c("card", ft.colors.WHITE))
-        shadow_color = self._c("shadow_color", ft.colors.with_opacity(0.18, ft.colors.BLACK))
-        self.card.shadow = ft.BoxShadow(blur_radius=12, color=shadow_color, offset=ft.Offset(0, 4), spread_radius=1)
+        # Fondo
+        self.bgcolor = pal.get("BG_COLOR", ft.colors.GREY_50)
+        self.card.bgcolor = pal.get("CARD_BG", ft.colors.WHITE)
+        self.card.shadow = ft.BoxShadow(
+            blur_radius=12,
+            color=global_pal.get("SHADOW", ft.colors.with_opacity(0.18, ft.colors.BLACK)),
+            offset=ft.Offset(0, 4),
+            spread_radius=1,
+        )
 
-        text_color = self._c("on_surface", self._c("text", ft.colors.BLACK))
-        text_muted = self._c("on_surface_variant", self._c("text_muted", text_color))
-
+        # Textos
         try:
-            title_text: ft.Text = self.card.content.controls[1]
-            title_text.color = text_color
-        except Exception:
-            pass
+            title: ft.Text = self.card.content.controls[1]
+            title.color = global_pal.get("FG_COLOR", ft.colors.BLACK)
+        except Exception as e:
+            print(f"[ERROR] _apply_theme: fallo al ajustar título: {e}")
+            traceback.print_exc()
 
-        border_color = self._c("outline", self._c("input_border", ft.colors.GREY_400))
-        fill_color = self._c("surface_container", self._c("field_bg", ft.colors.with_opacity(0.02, ft.colors.BLACK)))
+        border_color = global_pal.get("BORDER_COLOR", ft.colors.OUTLINE)
+        fill_color = global_pal.get("FIELD_BG", ft.colors.with_opacity(0.02, ft.colors.BLACK))
+        text_color = global_pal.get("FG_COLOR", ft.colors.ON_SURFACE)
+        text_muted = global_pal.get("MUTED", ft.colors.GREY_600)
 
         for tf in (self.user_field, self.password_field):
-            tf.color = text_color
-            tf.label_style = ft.TextStyle(color=text_muted)
-            tf.border_color = border_color
-            tf.bgcolor = fill_color
+            try:
+                tf.color = text_color
+                tf.label_style = ft.TextStyle(color=text_muted)
+                tf.border_color = border_color
+                tf.bgcolor = fill_color
+            except Exception as e:
+                print(f"[ERROR] _apply_theme: fallo al aplicar estilo a TextField: {e}")
+                traceback.print_exc()
 
-        primary = self._c("primary", ft.colors.RED_500)
-        on_primary = self._c("on_primary", ft.colors.WHITE)
-        self.login_button.bgcolor = primary
-        self.login_button.color = on_primary
+        primary = global_pal.get("PRIMARY", ft.colors.RED_500)
+        on_primary = global_pal.get("ON_PRIMARY", ft.colors.WHITE)
+        try:
+            self.login_button.bgcolor = primary
+            self.login_button.color = on_primary
+        except Exception as e:
+            print(f"[ERROR] _apply_theme: fallo al aplicar estilo a login_button: {e}")
+            traceback.print_exc()
 
-        error_color = self._c("error", self._c("danger", ft.colors.RED_400))
-        self.login_message.color = error_color
+        try:
+            self.login_message.color = global_pal.get("ERROR", ft.colors.RED_400)
+        except Exception:
+            pass
 
         self.logo.src = self._logo_dark_src if self._is_dark() else self._logo_light_src
 
-        try:
-            self.update()
-        except Exception:
-            p = getattr(self, "page", None)
-            if p:
-                p.update()
+        # Actualiza solo si ya hay page (control montado)
+        if self.page:
+            try:
+                self.page.update()
+            except Exception as e2:
+                print(f"[WARN] _apply_theme: page.update() falló: {e2}")
+                traceback.print_exc()
 
     def did_mount(self):
-        self.page = AppState().page
-        # ⬅️ Refuerza el modo nada más montar (por si __init__ no tuvo page aún)
-        self._boot_from_settings()
-        self._apply_theme()
-        # Suscripción a cambios de tema si existe
+        """Ahora sí, ya estamos en el árbol de la Page; aplica tema y suscribe listener."""
         try:
-            if hasattr(self.theme, "subscribe"):
-                self._theme_token = self.theme.subscribe(lambda *_: self._apply_theme())
-            elif hasattr(self.theme, "on_change"):
-                self._theme_token = self.theme.on_change(lambda *_: self._apply_theme())
-        except Exception:
-            self._theme_token = None
+            self.page = AppState().page
+            if not self.page:
+                print("[WARN] did_mount: AppState().page es None")
+            AppState().on_theme_change(self._apply_theme)
+            self._apply_theme()
+            if self.page:
+                self.page.update()
+        except Exception as e:
+            print(f"[ERROR] did_mount: excepción: {e}")
+            traceback.print_exc()
 
     def will_unmount(self):
         try:
-            if self._theme_token is not None:
-                if hasattr(self.theme, "unsubscribe"):
-                    self.theme.unsubscribe(self._theme_token)
-                elif hasattr(self.theme, "remove_listener"):
-                    self.theme.remove_listener(self._theme_token)
-        except Exception:
-            pass
+            AppState().off_theme_change(self._apply_theme)
+        except Exception as e:
+            print(f"[ERROR] will_unmount: fallo al remover listener de tema: {e}")
+            traceback.print_exc()
+
+    # ===================== UX helpers =====================
+    def _set_loading(self, state: bool):
+        self.progress.visible = state
+        self.user_field.disabled = state
+        self.password_field.disabled = state
+        self.login_button.disabled = state
+        if self.page:
+            try:
+                self.page.update()
+            except Exception as e:
+                print(f"[WARN] _set_loading: page.update() falló: {e}")
+                traceback.print_exc()
+
+    def _show_error(self, msg: str):
+        self.login_message.value = msg
+        if self.page:
+            try:
+                self.page.snack_bar = ft.SnackBar(ft.Text(msg))
+                self.page.snack_bar.open = True
+                self.page.update()
+            except Exception as e:
+                print(f"[ERROR] _show_error: fallo mostrar snack_bar: {e}")
+                traceback.print_exc()
+
+    # ===================== Post-login routing =====================
+    def _route_after_login(self, user: dict) -> str:
+        """
+        Devuelve la ruta destino según el rol.
+        Por defecto, /trabajadores (tal como solicitaste).
+        """
+        rol = (
+            user.get("rol")
+            or user.get("ROL")
+            or user.get(getattr(E_USUARIOS, "ROL", object()).value, None)
+            or ""
+        )
+        rol = str(rol).strip().lower()
+
+        if rol in ("inventarista", "inventario", "almacenista"):
+            return "/inventario"
+        if rol in ("root", "admin", "dueño", "dueno", "gerente", "cajero"):
+            return "/home"
+        # recepcionista, barbero u otros
+        return "/trabajadores"
 
     # ===================== AUTH =====================
-
     def on_login(self, e: ft.ControlEvent):
-        page: ft.Page = AppState().page
+        page: ft.Page | None = AppState().page
 
         username = (self.user_field.value or "").strip()
         password = (self.password_field.value or "").strip()
 
         if not username or not password:
             self.login_message.value = "Ingrese usuario y contraseña."
-            page.update()
+            if page:
+                try:
+                    page.update()
+                except Exception as ex:
+                    print(f"[WARN] on_login: page.update() falló al requerir campos: {ex}")
+                    traceback.print_exc()
+            else:
+                print("[WARN] on_login: no hay page en AppState() al validar campos")
             return
 
+        self._set_loading(True)
         try:
+            print(f"[DEBUG] on_login: intentando autenticar usuario={username!r}")
             user = self.user_model.autenticar(username, password)
+            print(f"[DEBUG] on_login: resultado autenticar -> {bool(user)}")
 
             if not user:
                 existing = self.user_model.get_by_username(username)
                 if existing and existing.get(E_USUARIOS.ESTADO_USR.value) == E_USER_ESTADO.INACTIVO.value:
-                    self.login_message.value = "Usuario inactivo. Contacte al administrador."
+                    self._show_error("Usuario inactivo. Contacte al administrador.")
                 else:
-                    self.login_message.value = "Usuario o contraseña incorrectos."
-                page.update()
+                    self._show_error("Usuario o contraseña incorrectos.")
                 return
 
             session_user = {
@@ -242,13 +263,46 @@ class LoginContainer(ft.Container):
                 E_USUARIOS.ROL.value: user.get(E_USUARIOS.ROL.value),
                 E_USUARIOS.ESTADO_USR.value: user.get(E_USUARIOS.ESTADO_USR.value),
                 "capabilities": user.get("capabilities", {}),
+                "nombre_completo": user.get("nombre_completo") or user.get("USERNAME") or username,
             }
-            page.client_storage.set("app.user", session_user)
+            print(f"[DEBUG] on_login: session_user -> {session_user}")
 
-            page.go("/home")
+            if page:
+                try:
+                    page.client_storage.set("app.user", session_user)
+                except Exception as ex:
+                    print(f"[ERROR] on_login: client_storage.set() falló: {ex}")
+                    traceback.print_exc()
+            else:
+                print("[ERROR] on_login: AppState().page es None antes de client_storage.set")
+
+            # Redirección según rol (default: /trabajadores)
+            dest = self._route_after_login(session_user)
+            print(f"[DEBUG] on_login: redirigiendo a {dest!r}")
+            if page:
+                try:
+                    page.go(dest)
+                except Exception as ex:
+                    print(f"[ERROR] on_login: page.go({dest}) falló: {ex}")
+                    traceback.print_exc()
+            else:
+                print("[ERROR] on_login: AppState().page es None, no se puede page.go()")
 
         except Exception as ex:
-            self.login_message.value = f"Error inesperado: {ex}"
+            print(f"[ERROR] on_login: excepción inesperada: {ex}")
+            traceback.print_exc()
+            self._show_error(f"Error inesperado: {ex}")
         finally:
-            self._apply_theme()
-            page.update()
+            self._set_loading(False)
+            # Reaplicar tema por si cambió el modo mientras se autenticaba
+            try:
+                self._apply_theme()
+            except Exception as ex:
+                print(f"[ERROR] on_login: fallo _apply_theme en finally: {ex}")
+                traceback.print_exc()
+            if page:
+                try:
+                    page.update()
+                except Exception as ex:
+                    print(f"[WARN] on_login: page.update() en finally falló: {ex}")
+                    traceback.print_exc()
