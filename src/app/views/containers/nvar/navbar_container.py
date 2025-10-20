@@ -129,13 +129,50 @@ class NavBarContainer(ft.Container):
     # Construcción UI
     # ======================================================
     def _menu_items(self) -> List[Dict[str, Any]]:
+        # Detecta usuario en sesión desde client_storage (seteado en login)
+        try:
+            sess = self.app.get_client_value("app.user", None)
+        except Exception:
+            sess = None
+
+        rol = ""
+        username = ""
+        if isinstance(sess, dict):
+            rol = (sess.get("rol") or "").strip().lower()
+            username = (sess.get("username") or "").strip().lower()
+
+        # Iconos según rol (perfil)
+        icon_user_fallback = "assets/buttons/user-manager-area-button.png"  # fallback
+        icon_user = "assets/logos/user.png"
+        icon_root = "assets/logos/root.png"
+
+        user_icon = icon_root if (rol == "root" or username == "root") else icon_user
+        user_icon = user_icon or icon_user_fallback  # fallback final
+
         return [
-            {"icon_src": "assets/buttons/user-manager-area-button.png", "label": "Mi perfil", "tooltip": "Usuario actual", "route": None, "key": "usuario"},
+            {
+                "icon_src": user_icon,
+                "label": "Mi perfil",
+                "tooltip": "Usuario actual",
+                "route": None,            # sin navegación (acción futura)
+                "key": "usuario",
+            },
             {"icon_src": "assets/buttons/home-area-button.png", "label": "Inicio", "tooltip": "Ir a inicio", "route": "/home", "key": "home"},
             {"icon_src": "assets/buttons/employees-button.png", "label": "Trabajadores", "tooltip": "Gestión de trabajadores", "route": "/trabajadores", "key": "trabajadores"},
             {"icon_src": "assets/buttons/inventario-area-button.png", "label": "Inventario", "tooltip": "Gestión de inventario", "route": "/inventario", "key": "inventario"},
+
+            # NUEVO: Users Settings
+            {"icon_src": "assets/buttons/user-manager-area-button.png",
+            "label": "Usuarios",
+            "tooltip": "Ajustes de usuarios",
+            "route": "/users-settings",
+            "key": "users-settings"},
+
             {"icon_src": "assets/buttons/settings-button.png", "label": "Configuración", "tooltip": "Ajustes del sistema", "route": "/configuracion", "key": "configuracion"},
         ]
+
+
+
 
     def _build_ui(self):
         pal = self.theme_ctrl.get_colors("navbar")

@@ -185,6 +185,40 @@ class PaletteFactory:
                 },
             },
 
+            # -------- NUEVO: users-settings --------
+            "users-settings": {
+                "light": {
+                    "BG_COLOR":  "#F9FAFB",
+                    "CARD_BG":   "#FFFFFF",
+                    "DIVIDER_COLOR": ft.colors.RED_300,
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.12, ft.colors.BLACK),
+                    "BTN_BG":   ft.colors.GREY_100,
+                    "HOVER_BG": ft.colors.with_opacity(0.06, ft.colors.RED_600),
+                    "ACCENT":   ft.colors.RED_500,
+                    # extras útiles
+                    "HEADER":    "#7A1E1E",
+                    "ROW_HOVER": "rgba(211,47,47,0.05)",
+                    "BADGE_BG":  ft.colors.RED_50,
+                    "BADGE_FG":  ft.colors.RED_700,
+                    "ICON_COLOR": ft.colors.BLACK,
+                },
+                "dark": {
+                    "BG_COLOR":  "#0F1115",
+                    "CARD_BG":   "#1C1F26",
+                    "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.20, ft.colors.WHITE),
+                    "BTN_BG":   ft.colors.GREY_800,
+                    "HOVER_BG": ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
+                    "ACCENT":   ft.colors.RED_ACCENT_200,
+                    # extras útiles
+                    "HEADER":    "#FF8A80",
+                    "ROW_HOVER": "rgba(255,82,82,0.08)",
+                    "BADGE_BG":  ft.colors.with_opacity(0.14, ft.colors.RED_ACCENT_100),
+                    "BADGE_FG":  ft.colors.RED_ACCENT_200,
+                    "ICON_COLOR": ft.colors.GREY_300,
+                },
+            },
+
             "login": {
                 "light": {"BG_COLOR": "#FAFAFA", "CARD_BG": "#FFFFFF"},
                 "dark":  {"BG_COLOR": "#0F1115", "CARD_BG": "#1C1F26"},
@@ -215,6 +249,20 @@ class PaletteFactory:
                 "dark":  {"BTN_BG": "rgba(255,255,255,0.04)", "HOVER_BG": "rgba(255,82,82,0.10)"},
             },
         }
+
+        # ---- Aliases opcionales para el mismo esquema de colores ----
+        # Si en algún momento usas estas variantes de área/ruta,
+        # tendrán exactamente la misma paleta que "users-settings".
+        self.register_area_palette(
+            "usuarios-settings",
+            light=self._areas["users-settings"]["light"],
+            dark=self._areas["users-settings"]["dark"],
+        )
+        self.register_area_palette(
+            "usuarios-ajustes",
+            light=self._areas["users-settings"]["light"],
+            dark=self._areas["users-settings"]["dark"],
+        )
 
     # ---------- API ----------
     @staticmethod

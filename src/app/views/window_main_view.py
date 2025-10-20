@@ -11,6 +11,7 @@ from app.views.containers.home.home_container import HomeContainer
 from app.views.containers.nvar.navbar_container import NavBarContainer
 from app.views.containers.home.trabajadores.trabajadores_container import TrabajadoresContainer
 from app.views.containers.home.inventario.inventario_container import InventarioContainer
+from app.views.containers.home.usuarios.users_settings_container import UsersSettingsContainer
 
 
 @class_singleton
@@ -90,7 +91,7 @@ class WindowMain:
             bgcolor=nav_colors.get("BG_COLOR"),
         )
         self._content_host = ft.Container(
-            content=ft.Column([], expand=True, scroll=ft.ScrollMode.AUTO),
+            content=None,  # ← inicia vacío; se llena en _set_content
             expand=True,
             bgcolor=content_colors.get("BG_COLOR"),
         )
@@ -118,14 +119,23 @@ class WindowMain:
     # =========================================================
     # Sanitización profunda (evita ciclos de referencia)
     # =========================================================
+    # WindowMain._sanitize_control_tree
     def _sanitize_control_tree(self, root: ft.Control | None):
-        """
-        Limpieza segura del árbol de controles SIN tocar `control.data`,
-        porque se usa para mapear rutas en el menú lateral.
-        """
         if not root:
             return
         visited = set()
+
+        def _strip_controls_in(obj):
+            # Quita cualquier Control anidado en data
+            import flet as ft
+            if isinstance(obj, ft.Control):
+                return None
+            if isinstance(obj, (list, tuple, set)):
+                t = type(obj)
+                return t(_strip_controls_in(x) for x in obj)
+            if isinstance(obj, dict):
+                return {k: _strip_controls_in(v) for k, v in obj.items()}
+            return obj
 
         def _walk(c: ft.Control):
             if c is None:
@@ -135,9 +145,17 @@ class WindowMain:
                 return
             visited.add(cid)
 
-            # ⚠️ Importante: NO limpiar c.data. Se usa para route mapping.
-            # if hasattr(c, "data"): c.data = None
+            # ✅ Limpiamos solo data "peligrosa" (que contenga Controls)
+            try:
+                if hasattr(c, "data") and c.data is not None:
+                    cleaned = _strip_controls_in(c.data)
+                    # Si cambió, reasignamos; si no, respetamos data original
+                    if cleaned is None or cleaned is not c.data:
+                        c.data = cleaned
+            except Exception:
+                pass
 
+            # Continuar DFS
             for attr in ("content", "controls"):
                 val = getattr(c, attr, None)
                 if isinstance(val, ft.Control):
@@ -148,7 +166,8 @@ class WindowMain:
                             _walk(x)
 
         _walk(root)
-        print("🧹 [SANITIZE] Árbol de controles limpiado (data preservada).")
+        print("🧹 [SANITIZE] Árbol de controles limpiado (data sin Controls).")
+
 
     def _pre_update_sanitize(self):
         try:
@@ -217,6 +236,12 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
+            if path in ("/users-settings", "/usuarios-ajustes", "/users"):
+                self._current_module = "users-settings"
+                self._set_content([UsersSettingsContainer()], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
+
             # Ruta no reconocida → redirigir a /home para no desincronizar UI/URL
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
             if self._page:
@@ -250,7 +275,11 @@ class WindowMain:
                 colors = self.theme_ctrl.get_colors(self._current_module or "home")
                 if self._content_host:
                     self._content_host.bgcolor = colors.get("BG_COLOR")
-                    self._content_host.content = ft.Column(controls, expand=True, scroll=ft.ScrollMode.AUTO)
+                    # ⚠️ Importante: si hay un solo control, lo asignamos directo (sin Column)
+                    if len(controls) == 1:
+                        self._content_host.content = controls[0]
+                    else:
+                        self._content_host.content = ft.Column(controls, expand=True, scroll=ft.ScrollMode.AUTO)
 
                 app.set("content_container", self._content_host)
                 app.set("nav_container", self.nav_bar)
