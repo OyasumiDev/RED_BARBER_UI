@@ -9,6 +9,7 @@ from app.config.application.theme_controller import ThemeController
 # Modelo y enums
 from app.models.trabajadores_model import TrabajadoresModel
 from app.core.enums.e_trabajadores import E_TRABAJADORES, E_TRAB_TIPO, E_TRAB_ESTADO
+from app.core.enums.e_usuarios import E_USU_ROL  # <- para permisos por rol
 
 # TableBuilder + SortManager + (opcional) Scroll controller
 from app.ui.builders.table_builder import TableBuilder
@@ -37,11 +38,9 @@ def _f2(v: Any) -> str:
 class TrabajadoresContainer(ft.Container):
     """
     Módulo de trabajadores (Flet 0.23) integrado con TableBuilder v2.
-    - Mantiene filtros por ID y Nombre (priorizados).
-    - Ordenamiento por encabezado (SortManager).
-    - Edición en línea y alta de nuevos registros.
-    - Eliminar con confirmación.
-    - Reactivo al ThemeController (colores se re-aplican al vuelo).
+    - Toolbar: Agregar primero, luego filtros (ID y Nombre). Root también ve Importar/Exportar.
+    - Recepcionista: puede agregar y filtrar/buscar, NO editar/eliminar.
+    - Root: CRUD completo.
     """
 
     # =========================================================
@@ -55,6 +54,19 @@ class TrabajadoresContainer(ft.Container):
         self.page = self.app_state.page
         self.theme_ctrl = ThemeController()
         self.colors = self.theme_ctrl.get_colors()
+
+        # ---- Permisos por rol (desde el almacenamiento de cliente) ----
+        sess = None
+        try:
+            sess = self.page.client_storage.get("app.user") if self.page else None
+        except Exception:
+            pass
+        role = (sess.get("rol") if isinstance(sess, dict) else "") or ""
+        self.is_root = (role or "").lower() == E_USU_ROL.ROOT.value
+        # Política:
+        self.can_add = True                             # ambos pueden agregar
+        self.can_edit_existing = self.is_root           # solo root edita existentes
+        self.can_delete = self.is_root                  # solo root elimina
 
         # Estado de edición / nuevo
         self.fila_editando: Optional[int] = None
@@ -100,7 +112,7 @@ class TrabajadoresContainer(ft.Container):
             controls=[self.table_container, self.scroll_anchor],
         )
 
-        # ---------------- Botones de cabecera (pill) ----------------
+        # ---------------- Botones estilo "pill" ----------------
         def _btn(icon_name, text, on_click):
             return ft.GestureDetector(
                 on_tap=on_click,
@@ -170,7 +182,19 @@ class TrabajadoresContainer(ft.Container):
             on_click=lambda e: self._limpiar_sort_nombre(),
         )
 
-        # ---------------- Layout raíz ----------------
+        # ---------------- Layout raíz (Agregar primero + filtros; root ve import/export) ----------------
+        toolbar_controls: List[ft.Control] = []
+        if self.can_add:
+            toolbar_controls.append(self.add_button)
+        toolbar_controls += [
+            self.sort_id_input,
+            self.sort_id_clear_btn,
+            self.sort_name_input,
+            self.sort_name_clear_btn,
+        ]
+        if self.is_root:
+            toolbar_controls += [self.import_button, self.export_button]
+
         self.content = ft.Container(
             expand=True,
             bgcolor=self.colors.get("BG_COLOR"),
@@ -183,17 +207,7 @@ class TrabajadoresContainer(ft.Container):
                     ft.Row(
                         spacing=10,
                         alignment=ft.MainAxisAlignment.START,
-                        controls=[self.add_button, self.import_button, self.export_button],
-                    ),
-                    ft.Row(
-                        spacing=10,
-                        alignment=ft.MainAxisAlignment.START,
-                        controls=[
-                            self.sort_id_input,
-                            self.sort_id_clear_btn,
-                            self.sort_name_input,
-                            self.sort_name_clear_btn,
-                        ],
+                        controls=toolbar_controls,
                     ),
                     ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)),
                     ft.Container(
@@ -227,10 +241,10 @@ class TrabajadoresContainer(ft.Container):
             sort_manager=self.sort_manager,
             columns=columns,
             on_sort_change=self._on_sort_change,   # click en headers
-            on_accept=self._on_accept_row,         # aceptar (nuevo o edición si usamos actions_builder)
-            on_cancel=self._on_cancel_row,         # cancelar (nuevo o edición)
-            on_edit=self._on_edit_row,             # click editar normal
-            on_delete=self._on_delete_row,         # click borrar
+            on_accept=self._on_accept_row,         # aceptar (nuevo o edición si root)
+            on_cancel=self._on_cancel_row,         # cancelar
+            on_edit=self._on_edit_row,             # click editar normal (root)
+            on_delete=self._on_delete_row,         # click borrar (root)
             id_key=self.ID,
             dense_text=True,
             auto_scroll_new=True,
@@ -240,10 +254,10 @@ class TrabajadoresContainer(ft.Container):
         # Actions personalizadas: aceptar/cancelar cuando está en edición
         self.table_builder.attach_actions_builder(self._actions_builder)
 
-        # Scroll controller (opcional, si tu helper existe)
+        # Scroll controller (opcional)
         if ScrollTableController:
             try:
-                self.stc = ScrollTableController()  # si requiere args, ajusta aquí
+                self.stc = ScrollTableController()
                 self.table_builder.attach_scroll_controller(self.stc)
             except Exception:
                 self.stc = None
@@ -341,7 +355,6 @@ class TrabajadoresContainer(ft.Container):
     # Orden por encabezado (SortManager -> callback)
     # =========================================================
     def _on_sort_change(self, campo: str, grupo: Optional[str] = None, asc: Optional[bool] = None, *_, **__):
-        # Toggle simple ASC/DESC en self.orden_actual
         prev = self.orden_actual.get(campo)
         nuevo = "desc" if prev == "asc" else "asc"
         self.orden_actual = {k: None for k in self.orden_actual}
@@ -388,10 +401,8 @@ class TrabajadoresContainer(ft.Container):
 
     def _refrescar_dataset(self):
         datos = self._aplicar_prioridades_y_orden(self._fetch())
-        # Monta TableBuilder en UI si aún no
         if not self.table_container.content.controls:
             self.table_container.content.controls.append(self.table_builder.build())
-        # Aplica filas
         self.table_builder.set_rows(datos)
         if self.page:
             self.page.update()
@@ -406,7 +417,12 @@ class TrabajadoresContainer(ft.Container):
     def _fmt_nombre(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+
+        # Solo root puede editar EXISTENTES; recepcionista solo NUEVOS
+        en_edicion = (
+            (self.is_root and self.fila_editando == rid) or
+            bool(row.get("_is_new"))  # ambos roles pueden editar la fila nueva
+        )
         if not en_edicion:
             return ft.Text(_txt(value), size=12, color=fg)
 
@@ -424,7 +440,6 @@ class TrabajadoresContainer(ft.Container):
             if self.page: self.page.update()
         tf.on_change = validar
 
-        # guardar ref
         key = rid if rid is not None else -1
         self._ensure_edit_map(key)
         self._edit_controls[key]["nombre"] = tf
@@ -433,7 +448,10 @@ class TrabajadoresContainer(ft.Container):
     def _fmt_tipo(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        en_edicion = (
+            (self.is_root and self.fila_editando == rid) or
+            bool(row.get("_is_new"))
+        )
         if not en_edicion:
             return ft.Text(_txt(value), size=12, color=fg)
 
@@ -455,7 +473,10 @@ class TrabajadoresContainer(ft.Container):
     def _fmt_comision(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        en_edicion = (
+            (self.is_root and self.fila_editando == rid) or
+            bool(row.get("_is_new"))
+        )
         if not en_edicion:
             return ft.Text(_f2(value), size=12, color=fg)
 
@@ -484,7 +505,10 @@ class TrabajadoresContainer(ft.Container):
     def _fmt_estado(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
+        en_edicion = (
+            (self.is_root and self.fila_editando == rid) or
+            bool(row.get("_is_new"))
+        )
         if not en_edicion:
             return ft.Text(_txt(value), size=12, color=fg)
 
@@ -512,7 +536,7 @@ class TrabajadoresContainer(ft.Container):
     def _actions_builder(self, row: Dict[str, Any], is_new: bool) -> ft.Control:
         rid = row.get(self.ID)
 
-        # Fila NUEVA (aceptar/cancelar -> crear)
+        # Fila NUEVA (aceptar/cancelar -> crear) — permitido para ambos roles
         if is_new:
             return ft.Row(
                 [
@@ -522,8 +546,10 @@ class TrabajadoresContainer(ft.Container):
                 spacing=8, alignment=ft.MainAxisAlignment.START
             )
 
-        # Fila en EDICIÓN (aceptar/cancelar -> actualizar)
+        # Fila en EDICIÓN — solo root puede llegar aquí
         if self.fila_editando == rid:
+            if not self.is_root:
+                return ft.Text("—")
             return ft.Row(
                 [
                     boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
@@ -532,24 +558,31 @@ class TrabajadoresContainer(ft.Container):
                 spacing=8, alignment=ft.MainAxisAlignment.START
             )
 
-        # Fila NORMAL (editar/borrar)
-        return ft.Row(
-            [
-                boton_editar(lambda e, r=row: self._on_edit_row(r)),
-                boton_borrar(lambda e, r=row: self._on_delete_row(r)),
-            ],
-            spacing=8, alignment=ft.MainAxisAlignment.START
-        )
+        # Fila NORMAL
+        if self.is_root:
+            return ft.Row(
+                [
+                    boton_editar(lambda e, r=row: self._on_edit_row(r)),
+                    boton_borrar(lambda e, r=row: self._on_delete_row(r)),
+                ],
+                spacing=8, alignment=ft.MainAxisAlignment.START
+            )
+        # Recepcionista: sin acciones en filas existentes
+        return ft.Text("—")
 
     # =========================================================
     # Callbacks de acciones
     # =========================================================
     def _on_edit_row(self, row: Dict[str, Any]):
+        if not self.is_root:
+            return
         self.fila_editando = row.get(self.ID)
         self._edit_controls.pop(self.fila_editando if self.fila_editando is not None else -1, None)
         self._refrescar_dataset()
 
     def _on_delete_row(self, row: Dict[str, Any]):
+        if not self.is_root:
+            return
         rid = int(row.get(self.ID))
         self._confirmar_eliminar(rid)
 
@@ -558,6 +591,11 @@ class TrabajadoresContainer(ft.Container):
         is_new = bool(row.get("_is_new")) or (row.get(self.ID) in (None, "", 0))
         key = (row.get(self.ID) if not is_new else -1)
         ctrls = self._edit_controls.get(key, {})
+
+        # Si recepcionista intenta guardar una edición (no nueva), bloquea
+        if not self.is_root and not is_new:
+            self._snack_error("❌ No tienes permisos para editar registros existentes.")
+            return
 
         # Validaciones comunes
         nombre_tf: ft.TextField = ctrls.get("nombre")  # type: ignore[assignment]
@@ -602,7 +640,7 @@ class TrabajadoresContainer(ft.Container):
             else:
                 self._snack_error(f"❌ {res.get('message')}")
         else:
-            # Actualizar
+            # Actualizar (solo root)
             rid = int(row.get(self.ID))
             res = self.model.actualizar_trabajador(
                 trabajador_id=rid,
@@ -623,7 +661,6 @@ class TrabajadoresContainer(ft.Container):
         # Si era nueva -> eliminar fila temporal
         if row.get("_is_new") or (row.get(self.ID) in (None, "", 0)):
             self.fila_nueva_en_proceso = False
-            # remover última fila _is_new
             rows = self.table_builder.get_rows()
             try:
                 idx = next(i for i, r in enumerate(rows) if r is row or r.get("_is_new"))
@@ -634,7 +671,9 @@ class TrabajadoresContainer(ft.Container):
             if self.page: self.page.update()
             return
 
-        # Si era edición -> salir de edición
+        # Si era edición -> salir de edición (solo root)
+        if not self.is_root:
+            return
         rid = row.get(self.ID)
         self.fila_editando = None
         self._edit_controls.pop(rid if rid is not None else -1, None)
@@ -644,6 +683,8 @@ class TrabajadoresContainer(ft.Container):
     # Eliminar
     # =========================================================
     def _confirmar_eliminar(self, rid: int):
+        if not self.is_root:
+            return
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("¿Eliminar trabajador?", color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
@@ -667,6 +708,8 @@ class TrabajadoresContainer(ft.Container):
         self.page.update()
 
     def _do_delete(self, _e, rid: int, dlg: ft.AlertDialog):
+        if not self.is_root:
+            return
         res = self.model.eliminar_trabajador(int(rid))
         self.page.close(dlg)
         if res.get("status") == "success":
@@ -679,6 +722,8 @@ class TrabajadoresContainer(ft.Container):
     # Fila NUEVA (usa TableBuilder)
     # =========================================================
     def _insertar_fila_nueva(self, _e=None):
+        if not self.can_add:
+            return
         if self.fila_nueva_en_proceso:
             self._snack_ok("ℹ️ Ya hay un registro nuevo en proceso.")
             return
@@ -698,9 +743,15 @@ class TrabajadoresContainer(ft.Container):
     # Import / Export (placeholder)
     # =========================================================
     def _on_importar(self):
+        if not self.is_root:
+            self._snack_error("❌ Solo el usuario root puede importar.")
+            return
         self._snack_ok("ℹ️ Importar: pendiente de implementación.")
 
     def _on_exportar(self):
+        if not self.is_root:
+            self._snack_error("❌ Solo el usuario root puede exportar.")
+            return
         self._snack_ok("ℹ️ Exportar: pendiente de implementación.")
 
     # =========================================================

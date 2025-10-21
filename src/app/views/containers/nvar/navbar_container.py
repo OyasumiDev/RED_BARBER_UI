@@ -154,14 +154,20 @@ class NavBarContainer(ft.Container):
                 "icon_src": user_icon,
                 "label": "Mi perfil",
                 "tooltip": "Usuario actual",
-                "route": None,            # sin navegación (acción futura)
+                "route": None,
                 "key": "usuario",
             },
             {"icon_src": "assets/buttons/home-area-button.png", "label": "Inicio", "tooltip": "Ir a inicio", "route": "/home", "key": "home"},
             {"icon_src": "assets/buttons/employees-button.png", "label": "Trabajadores", "tooltip": "Gestión de trabajadores", "route": "/trabajadores", "key": "trabajadores"},
             {"icon_src": "assets/buttons/inventario-area-button.png", "label": "Inventario", "tooltip": "Gestión de inventario", "route": "/inventario", "key": "inventario"},
 
-            # NUEVO: Users Settings
+            # ✅ Nueva área Agenda
+            {"icon_src": "assets/buttons/agenda-area-button.png",
+            "label": "Agenda",
+            "tooltip": "Agenda de citas y horarios",
+            "route": "/agenda",
+            "key": "agenda"},
+
             {"icon_src": "assets/buttons/user-manager-area-button.png",
             "label": "Usuarios",
             "tooltip": "Ajustes de usuarios",
@@ -170,6 +176,7 @@ class NavBarContainer(ft.Container):
 
             {"icon_src": "assets/buttons/settings-button.png", "label": "Configuración", "tooltip": "Ajustes del sistema", "route": "/configuracion", "key": "configuracion"},
         ]
+
 
 
 

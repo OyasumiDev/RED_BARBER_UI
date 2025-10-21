@@ -12,6 +12,7 @@ from app.views.containers.nvar.navbar_container import NavBarContainer
 from app.views.containers.home.trabajadores.trabajadores_container import TrabajadoresContainer
 from app.views.containers.home.inventario.inventario_container import InventarioContainer
 from app.views.containers.home.usuarios.users_settings_container import UsersSettingsContainer
+from app.views.containers.home.agenda.agenda_container import AgendaContainer
 
 
 @class_singleton
@@ -241,6 +242,13 @@ class WindowMain:
                 self._set_content([UsersSettingsContainer()], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
+            
+            if path in ("/agenda", "/agenda-citas", "/citas"):
+                self._current_module = "agenda"
+                self._set_content([AgendaContainer()], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
+
 
             # Ruta no reconocida → redirigir a /home para no desincronizar UI/URL
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")

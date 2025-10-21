@@ -7,12 +7,14 @@ from app.views.window_main_view import window_main
 from app.models.usuarios_model import UsuariosModel
 from app.models.trabajadores_model import TrabajadoresModel
 from app.models.inventario_model import InventarioModel
+from app.models.agenda_model import AgendaModel  # ⬅️ NUEVO
 
 # ================== ENUMS Y DB ==================
 from app.config.db.database_mysql import DatabaseMysql
 from app.core.enums.e_usuarios import E_USUARIOS
 from app.core.enums.e_trabajadores import E_TRABAJADORES
 from app.core.enums.e_inventario import E_INVENTARIO, E_INV_MOVS, E_INV_ALERTAS
+from app.core.enums.e_agenda import E_AGENDA  # ⬅️ NUEVO
 
 # ================== TEMA GLOBAL ==================
 from app.config.application.theme_controller import ThemeController
@@ -47,6 +49,7 @@ def _preflight_verify_tables():
         ("inventario", E_INVENTARIO.TABLE.value),
         ("inventario_movimientos", E_INV_MOVS.TABLE.value),
         ("inventario_alertas", E_INV_ALERTAS.TABLE.value),
+        ("agenda_citas", E_AGENDA.TABLE.value),  # ⬅️ NUEVO
     ]
 
     for label, tbl in checks:
@@ -95,6 +98,7 @@ def bootstrap_db():
     _safe_create("tabla usuarios_app", UsuariosModel)
     _safe_create("tabla trabajadores", TrabajadoresModel)
     _safe_create("tabla inventario", InventarioModel)
+    _safe_create("tabla agenda_citas", AgendaModel)  # ⬅️ NUEVO
 
     print("✅ Bootstrap de base de datos completado correctamente.\n")
 

@@ -7,11 +7,12 @@ from typing import Any, Dict, List, Optional
 from app.config.application.app_state import AppState
 from app.views.containers.nvar.layout_controller import LayoutController
 
-# Modelo y enums (los que te dejé antes)
+# Modelo y enums
 from app.models.inventario_model import InventarioModel
 from app.core.enums.e_inventario import (
     E_INVENTARIO, E_INV_CATEGORIA, E_INV_UNIDAD, E_INV_ESTADO, E_INV_MOV
 )
+from app.core.enums.e_usuarios import E_USU_ROL  # <- permisos por rol
 
 # TableBuilder + SortManager + (opcional) Scroll controller
 from app.ui.builders.table_builder import TableBuilder
@@ -45,13 +46,13 @@ def _f3(v: Any) -> str:
 
 class InventarioContainer(ft.Container):
     """
-    Módulo de inventario integrado con TableBuilder v2.
-    - Filtros por ID / Nombre / Categoría y orden por encabezado.
-    - Edición en línea + alta y baja con confirmación.
-    - Stock actual es de solo lectura (se mueve con movimientos).
-    - Switch "Solo bajo stock" para resaltar reposiciones.
-    - Reacciona a AppState (tema) y LayoutController (nvar persistente).
-    - Callback de stock bajo: usa SnackBar/rojo para avisar.
+    Inventario con TableBuilder v2 y permisos por rol.
+
+    - Recepcionista: SOLO ver y filtrar/buscar. (Sin agregar, sin editar, sin borrar, sin movimientos).
+    - Root: CRUD completo + movimientos (Entrada/Salida) + import/export.
+    - Stock:
+        * Root puede escribir stock al CREAR (stock inicial) y al EDITAR (se aplica delta como entrada/salida).
+        * Recepcionista nunca edita.
     """
 
     # =========================================================
@@ -64,6 +65,21 @@ class InventarioContainer(ft.Container):
         self.app_state = AppState()
         self.page = self.app_state.page
         self.colors = self.app_state.get_colors()
+
+        # Permisos por rol
+        sess = None
+        try:
+            sess = self.page.client_storage.get("app.user") if self.page else None
+        except Exception:
+            pass
+        role = (sess.get("rol") if isinstance(sess, dict) else "") or ""
+        self.is_root = (role or "").lower() == E_USU_ROL.ROOT.value
+        # >>> recepcionista NO puede agregar/editar/borrar/mover
+        self.can_add = self.is_root
+        self.can_edit_existing = self.is_root
+        self.can_delete = self.is_root
+        self.can_move = self.is_root
+        self.can_import_export = self.is_root
 
         # Estado
         self._mounted = False
@@ -94,7 +110,6 @@ class InventarioContainer(ft.Container):
 
         # Refs de controles
         self._edit_controls: Dict[int, Dict[str, ft.Control]] = {}
-        self._new_controls: Dict[str, ft.Control] = {}
 
         # Modelo
         self.model = InventarioModel()
@@ -122,7 +137,7 @@ class InventarioContainer(ft.Container):
             controls=[self.table_container, self.scroll_anchor],
         )
 
-        # ---------------- Botones de cabecera (pill) ----------------
+        # ---------------- Botones "pill" ----------------
         def _pill(icon_name, text, on_click):
             return ft.GestureDetector(
                 on_tap=on_click,
@@ -148,15 +163,14 @@ class InventarioContainer(ft.Container):
 
         # ---------------- Toolbar (filtros) ----------------
         self.sort_id_input = ft.TextField(
-            label="Ordenar por ID",
-            hint_text="ID de producto (Enter)",
-            width=140,
+            label="ID",
+            hint_text="ID (Enter)",
+            width=120,
             keyboard_type=ft.KeyboardType.NUMBER,
             on_submit=lambda e: self._aplicar_sort_id(),
             on_change=self._id_on_change_auto_reset,
         )
         self._apply_textfield_palette(self.sort_id_input)
-
         self.sort_id_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar ID",
@@ -165,14 +179,13 @@ class InventarioContainer(ft.Container):
         )
 
         self.sort_name_input = ft.TextField(
-            label="Buscar por Nombre",
+            label="Nombre",
             hint_text="Nombre (Enter)",
-            width=260,
+            width=240,
             on_submit=lambda e: self._aplicar_sort_nombre(),
             on_change=self._nombre_on_change_auto_reset,
         )
         self._apply_textfield_palette(self.sort_name_input)
-
         self.sort_name_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR,
             tooltip="Limpiar nombre",
@@ -191,7 +204,6 @@ class InventarioContainer(ft.Container):
             ],
             on_change=lambda e: self._aplicar_categoria(),
         )
-        # aplica paleta de dropdown
         self.categoria_dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
         self.low_stock_switch = ft.Switch(
@@ -200,7 +212,26 @@ class InventarioContainer(ft.Container):
             on_change=lambda e: self._toggle_low_stock(e.control.value),
         )
 
-        # ---------------- Layout raíz ----------------
+        self.filters_clear_btn = ft.IconButton(
+            icon=ft.icons.CLEAR_ALL,
+            tooltip="Limpiar filtros",
+            icon_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+            on_click=lambda e: self._limpiar_filtros(),
+        )
+
+        # ---------------- Layout raíz: una sola fila ----------------
+        toolbar_controls: List[ft.Control] = []
+        if self.can_add:
+            toolbar_controls.append(self.add_button)
+        toolbar_controls += [
+            self.sort_id_input, self.sort_id_clear_btn,
+            self.sort_name_input, self.sort_name_clear_btn,
+            self.categoria_dd, self.low_stock_switch,
+            self.filters_clear_btn,
+        ]
+        if self.can_import_export:
+            toolbar_controls += [self.import_button, self.export_button]
+
         self.content = ft.Container(
             expand=True,
             bgcolor=self.colors.get("BG_COLOR"),
@@ -210,20 +241,7 @@ class InventarioContainer(ft.Container):
                 alignment=ft.MainAxisAlignment.START,
                 spacing=10,
                 controls=[
-                    ft.Row(
-                        spacing=10,
-                        alignment=ft.MainAxisAlignment.START,
-                        controls=[self.add_button, self.import_button, self.export_button],
-                    ),
-                    ft.Row(
-                        spacing=10,
-                        alignment=ft.MainAxisAlignment.START,
-                        controls=[
-                            self.sort_id_input, self.sort_id_clear_btn,
-                            self.sort_name_input, self.sort_name_clear_btn,
-                            self.categoria_dd, self.low_stock_switch
-                        ],
-                    ),
+                    ft.Row(spacing=10, alignment=ft.MainAxisAlignment.START, controls=toolbar_controls),
                     ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)),
                     ft.Container(
                         alignment=ft.alignment.top_center,
@@ -252,7 +270,7 @@ class InventarioContainer(ft.Container):
             {"key": self.NOMBRE, "title": "Nombre",    "width": 280, "align": "start",  "formatter": self._fmt_nombre},
             {"key": self.CATEG,  "title": "Categoría", "width": 140, "align": "start",  "formatter": self._fmt_categoria},
             {"key": self.UNIDAD, "title": "Unidad",    "width": 110, "align": "center", "formatter": self._fmt_unidad},
-            {"key": self.STOCK,  "title": "Stock",     "width": 110, "align": "end",    "formatter": self._fmt_stock_rdonly},
+            {"key": self.STOCK,  "title": "Stock",     "width": 110, "align": "end",    "formatter": self._fmt_stock},
             {"key": self.MINIMO, "title": "Mínimo",    "width": 110, "align": "end",    "formatter": self._fmt_minimo},
             {"key": self.COSTO,  "title": "Costo",     "width": 120, "align": "end",    "formatter": self._fmt_costo},
             {"key": self.PRECIO, "title": "Precio",    "width": 120, "align": "end",    "formatter": self._fmt_precio},
@@ -361,6 +379,7 @@ class InventarioContainer(ft.Container):
         self.sort_id_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         self.sort_name_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         self.categoria_dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+        self.filters_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
         # fondos
         self.bgcolor = self.colors.get("BG_COLOR")
@@ -421,6 +440,17 @@ class InventarioContainer(ft.Container):
         self.only_low_stock = bool(val)
         self._refrescar_dataset()
 
+    def _limpiar_filtros(self):
+        self.sort_id_filter = None
+        self.sort_name_filter = None
+        self.categoria_filter = None
+        self.only_low_stock = False
+        self.sort_id_input.value = ""
+        self.sort_name_input.value = ""
+        self.categoria_dd.value = ""
+        self.low_stock_switch.value = False
+        self._refrescar_dataset()
+
     # =========================================================
     # Orden por encabezado
     # =========================================================
@@ -464,20 +494,19 @@ class InventarioContainer(ft.Container):
     # Dataset / Render
     # =========================================================
     def _fetch(self) -> List[Dict[str, Any]]:
-        # usa filtros de categoría en query principal y nombre via python
         estado = None
         categoria = self.categoria_filter
         rows = self.model.listar(estado=estado, categoria=categoria) or []
-        # filtro nombre
         if self.sort_name_filter:
             q = self.sort_name_filter.lower()
             rows = [r for r in rows if q in str(r.get(self.NOMBRE, "")).lower()]
-        # filtro ID
         if self.sort_id_filter:
             rows = [r for r in rows if str(r.get(self.ID)) == str(self.sort_id_filter)]
-        # solo bajo stock
         if self.only_low_stock:
-            rows = [r for r in rows if float(r.get(self.STOCK) or 0) <= float(r.get(self.MINIMO) or 0)]
+            def _f(v): 
+                try: return float(v or 0)
+                except Exception: return 0.0
+            rows = [r for r in rows if _f(r.get(self.STOCK)) <= _f(r.get(self.MINIMO))]
         return rows
 
     def _refrescar_dataset(self):
@@ -490,42 +519,34 @@ class InventarioContainer(ft.Container):
     # =========================================================
     # Formatters por columna
     # =========================================================
+    def _en_edicion(self, row: Dict[str, Any]) -> bool:
+        """Solo root puede editar (ya sea fila nueva o existente en edición)."""
+        rid = row.get(self.ID)
+        return self.is_root and ((self.fila_editando == rid) or bool(row.get("_is_new")))
+
     def _fmt_id(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         return ft.Text(_txt(value), size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
     def _fmt_nombre(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-        if not en_edicion:
+        if not self._en_edicion(row):
             return ft.Text(_txt(value), size=12, color=fg)
-
-        tf = ft.TextField(
-            value=_txt(value),
-            hint_text="Nombre del producto",
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
-        )
+        tf = ft.TextField(value=_txt(value), hint_text="Nombre del producto", text_size=12,
+                          content_padding=ft.padding.symmetric(horizontal=8, vertical=6))
         self._apply_textfield_palette(tf)
-
         def validar(_):
             v = (tf.value or "").strip()
             tf.border_color = None if len(v) >= 2 else ft.colors.RED
             self._safe_update()
         tf.on_change = validar
-
-        key = rid if rid is not None else -1
-        self._ensure_edit_map(key)
-        self._edit_controls[key]["nombre"] = tf
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key]["nombre"] = tf
         return tf
 
     def _fmt_categoria(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-        if not en_edicion:
+        if not self._en_edicion(row):
             return ft.Text(_txt(value), size=12, color=fg)
-
         dd = ft.Dropdown(
             value=value or E_INV_CATEGORIA.INSUMO.value,
             options=[
@@ -533,22 +554,16 @@ class InventarioContainer(ft.Container):
                 ft.dropdown.Option(E_INV_CATEGORIA.HERRAMIENTA.value, "herramienta"),
                 ft.dropdown.Option(E_INV_CATEGORIA.PRODUCTO.value, "producto"),
             ],
-            dense=True,
-            width=140,
-            text_style=ft.TextStyle(color=fg),
+            dense=True, width=140, text_style=ft.TextStyle(color=fg),
         )
-        key = rid if rid is not None else -1
-        self._ensure_edit_map(key)
-        self._edit_controls[key]["categoria"] = dd
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key]["categoria"] = dd
         return dd
 
     def _fmt_unidad(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-        if not en_edicion:
+        if not self._en_edicion(row):
             return ft.Text(_txt(value), size=12, color=fg)
-
         dd = ft.Dropdown(
             value=value or E_INV_UNIDAD.PIEZA.value,
             options=[
@@ -560,37 +575,39 @@ class InventarioContainer(ft.Container):
                 ft.dropdown.Option(E_INV_UNIDAD.CAJA.value, "caja"),
                 ft.dropdown.Option(E_INV_UNIDAD.PAQUETE.value, "paquete"),
             ],
-            dense=True,
-            width=120,
-            text_style=ft.TextStyle(color=fg),
+            dense=True, width=120, text_style=ft.TextStyle(color=fg),
         )
-        key = rid if rid is not None else -1
-        self._ensure_edit_map(key)
-        self._edit_controls[key]["unidad"] = dd
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key]["unidad"] = dd
         return dd
 
-    def _fmt_stock_rdonly(self, value: Any, row: Dict[str, Any]) -> ft.Control:
-        # solo lectura; se actualiza por movimientos
-        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        current = float(row.get(self.STOCK) or 0)
-        minimo  = float(row.get(self.MINIMO) or 0)
-        col = fg if current > minimo else ft.colors.RED_600
-        icon = None if current > minimo else ft.Icon(ft.icons.WARNING_AMBER_ROUNDED, size=14, color=col)
-        label = ft.Text(_f3(current), size=12, color=col)
-        if icon:
-            return ft.Row([label, icon], spacing=4, alignment=ft.MainAxisAlignment.END)
-        return label
-
-    def _fmt_minimo(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+    def _fmt_stock(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        """
+        Stock:
+        - Solo root lo edita (nueva o edición). Recepcionista siempre ve texto.
+        """
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-        if not en_edicion:
-            return ft.Text(_f3(value), size=12, color=fg)
+        en_edicion = self._en_edicion(row)
 
+        if not en_edicion:
+            try:
+                current = float(row.get(self.STOCK) or 0)
+            except Exception:
+                current = 0.0
+            try:
+                minimo  = float(row.get(self.MINIMO) or 0)
+            except Exception:
+                minimo = 0.0
+            col = fg if current > minimo else ft.colors.RED_600
+            icon = None if current > minimo else ft.Icon(ft.icons.WARNING_AMBER_ROUNDED, size=14, color=col)
+            label = ft.Text(_f3(current), size=12, color=col)
+            return ft.Row([label, icon] if icon else [label], spacing=4, alignment=ft.MainAxisAlignment.END)
+
+        # Editable (nueva o edición root)
         tf = ft.TextField(
-            value=_f3(value) if value is not None and not row.get("_is_new") else "",
-            hint_text="Stock mínimo",
+            value=("" if row.get("_is_new") else _f3(value or 0)),
+            hint_text="Stock",
             keyboard_type=ft.KeyboardType.NUMBER,
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
@@ -599,16 +616,37 @@ class InventarioContainer(ft.Container):
 
         def validar(_):
             try:
-                v = float(tf.value)
+                v = float((tf.value or "").replace(",", "."))
                 tf.border_color = None if v >= 0 else ft.colors.RED
             except Exception:
                 tf.border_color = ft.colors.RED
             self._safe_update()
         tf.on_change = validar
 
-        key = rid if rid is not None else -1
+        key = (rid if rid is not None else -1)
         self._ensure_edit_map(key)
-        self._edit_controls[key]["stock_minimo"] = tf
+        self._edit_controls[key]["stock_actual"] = tf
+        return tf
+
+    def _fmt_minimo(self, value: Any, row: Dict[str, Any]) -> ft.Control:
+        fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
+        if not self._en_edicion(row):
+            return ft.Text(_f3(value), size=12, color=fg)
+        tf = ft.TextField(
+            value=_f3(value) if value is not None and not row.get("_is_new") else "",
+            hint_text="Stock mínimo", keyboard_type=ft.KeyboardType.NUMBER,
+            text_size=12, content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
+        )
+        self._apply_textfield_palette(tf)
+        def validar(_):
+            try:
+                v = float((tf.value or "").replace(",", ".")); tf.border_color = None if v >= 0 else ft.colors.RED
+            except Exception:
+                tf.border_color = ft.colors.RED
+            self._safe_update()
+        tf.on_change = validar
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key]["stock_minimo"] = tf
         return tf
 
     def _fmt_costo(self, value: Any, row: Dict[str, Any]) -> ft.Control:
@@ -619,55 +657,39 @@ class InventarioContainer(ft.Container):
 
     def _fmt_money_editable(self, value: Any, row: Dict[str, Any], *, key_name: str, hint: str) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-        if not en_edicion:
+        if not self._en_edicion(row):
             return ft.Text(_f2(value), size=12, color=fg)
-
         tf = ft.TextField(
             value=_f2(value) if value is not None and not row.get("_is_new") else "",
-            hint_text=hint,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            text_size=12,
+            hint_text=hint, keyboard_type=ft.KeyboardType.NUMBER, text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
         )
         self._apply_textfield_palette(tf)
-
         def validar(_):
             try:
-                v = float(tf.value)
-                tf.border_color = None if v >= 0 else ft.colors.RED
+                v = float((tf.value or "").replace(",", ".")); tf.border_color = None if v >= 0 else ft.colors.RED
             except Exception:
                 tf.border_color = ft.colors.RED
             self._safe_update()
         tf.on_change = validar
-
-        key = rid if rid is not None else -1
-        self._ensure_edit_map(key)
-        self._edit_controls[key][key_name] = tf
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key][key_name] = tf
         return tf
 
     def _fmt_estado(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
-        rid = row.get(self.ID)
-        en_edicion = (self.fila_editando == rid) or bool(row.get("_is_new"))
-
-        if not en_edicion:
+        if not self._en_edicion(row):
             return ft.Text(_txt(value), size=12, color=fg)
-
         dd = ft.Dropdown(
             value=value or E_INV_ESTADO.ACTIVO.value,
             options=[
                 ft.dropdown.Option(E_INV_ESTADO.ACTIVO.value, "activo"),
                 ft.dropdown.Option(E_INV_ESTADO.INACTIVO.value, "inactivo"),
             ],
-            dense=True,
-            width=120,
-            text_style=ft.TextStyle(color=fg),
+            dense=True, width=120, text_style=ft.TextStyle(color=fg),
         )
-        key = rid if rid is not None else -1
-        self._ensure_edit_map(key)
-        self._edit_controls[key]["estado"] = dd
+        key = (row.get(self.ID) if row.get(self.ID) is not None else -1)
+        self._ensure_edit_map(key); self._edit_controls[key]["estado"] = dd
         return dd
 
     def _ensure_edit_map(self, key: int):
@@ -680,7 +702,6 @@ class InventarioContainer(ft.Container):
     def _actions_builder(self, row: Dict[str, Any], is_new: bool) -> ft.Control:
         rid = row.get(self.ID)
 
-        # Botón simple de movimientos (abre diálogo rápido)
         def _btn_mov(icon, tooltip, on_click):
             return ft.IconButton(
                 icon=icon,
@@ -689,50 +710,104 @@ class InventarioContainer(ft.Container):
                 on_click=on_click,
             )
 
-        if is_new or self.fila_editando == rid:
+        # Nueva fila → solo root puede aceptar/cancelar
+        if is_new or bool(row.get("_is_new")) or (row.get(self.ID) in (None, "", 0)):
+            if not self.is_root:
+                return ft.Text("—", size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
             return ft.Row(
                 [
-                    boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
-                    boton_cancelar(lambda e, r=row: self._on_cancel_row(r)),
+                    ft.IconButton(icon=ft.icons.CHECK, tooltip="Aceptar",
+                                  icon_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+                                  on_click=lambda e, r=row: self._on_accept_row(r)),
+                    ft.IconButton(icon=ft.icons.CLOSE, tooltip="Cancelar",
+                                  icon_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+                                  on_click=lambda e, r=row: self._on_cancel_row(r)),
                 ],
                 spacing=6, alignment=ft.MainAxisAlignment.START
             )
 
-        return ft.Row(
-            [
-                _btn_mov(ft.icons.NORTH_EAST, "Entrada", lambda e, r=row: self._open_mov_dialog(r, E_INV_MOV.ENTRADA.value)),
-                _btn_mov(ft.icons.SOUTH_WEST, "Salida",  lambda e, r=row: self._open_mov_dialog(r, E_INV_MOV.SALIDA.value)),
-                _btn_mov(ft.icons.SYNC,       "Ajuste",  lambda e, r=row: self._open_mov_dialog(r, E_INV_MOV.AJUSTE.value)),
-                boton_editar(lambda e, r=row: self._on_edit_row(r)),
-                boton_borrar(lambda e, r=row: self._on_delete_row(r)),
-            ],
-            spacing=6, alignment=ft.MainAxisAlignment.START
-        )
+        # Edición de existente
+        if self.fila_editando == rid:
+            if not self.is_root:
+                return ft.Text("—", size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+            return ft.Row(
+                [boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
+                 boton_cancelar(lambda e, r=row: self._on_cancel_row(r))],
+                spacing=6, alignment=ft.MainAxisAlignment.START
+            )
+
+        # Fila normal existente
+        if self.is_root:
+            return ft.Row(
+                [
+                    _btn_mov(ft.icons.NORTH_EAST, "Entrada", lambda e, r=row: self._open_mov_dialog(r, E_INV_MOV.ENTRADA.value)),
+                    _btn_mov(ft.icons.SOUTH_WEST, "Salida",  lambda e, r=row: self._open_mov_dialog(r, E_INV_MOV.SALIDA.value)),
+                    boton_editar(lambda e, r=row: self._on_edit_row(r)),
+                    boton_borrar(lambda e, r=row: self._on_delete_row(r)),
+                ],
+                spacing=6, alignment=ft.MainAxisAlignment.START
+            )
+
+        # Recepcionista: sin acciones
+        return ft.Text("—", size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
     # =========================================================
     # Callbacks de acciones
     # =========================================================
     def _on_edit_row(self, row: Dict[str, Any]):
+        if not self.is_root:
+            return
         self.fila_editando = row.get(self.ID)
         self._edit_controls.pop(self.fila_editando if self.fila_editando is not None else -1, None)
         self._refrescar_dataset()
 
     def _on_delete_row(self, row: Dict[str, Any]):
+        if not self.is_root:
+            return
         rid = int(row.get(self.ID))
         self._confirmar_eliminar(rid)
 
+    # Helper robusto para extraer ID de crear_producto
+    def _extract_created_id(self, res: Dict[str, Any]) -> Optional[int]:
+        cand = [
+            res.get("id"),
+            res.get("item_id"),
+            res.get("new_id"),
+            (res.get("data") or {}).get("id") if isinstance(res.get("data"), dict) else None,
+            (res.get("data") or {}).get("item_id") if isinstance(res.get("data"), dict) else None,
+            (res.get("record") or {}).get("id") if isinstance(res.get("record"), dict) else None,
+            (res.get("producto") or {}).get("id") if isinstance(res.get("producto"), dict) else None,
+        ]
+        for v in cand:
+            if v is None: 
+                continue
+            s = str(v).strip()
+            if s.isdigit():
+                try:
+                    return int(s)
+                except Exception:
+                    pass
+        return None
+
     def _on_accept_row(self, row: Dict[str, Any]):
+        # Recepcionista NO puede agregar ni editar
+        if not self.is_root:
+            self._snack_error("❌ No tienes permisos para agregar ni editar productos.")
+            return
+
         is_new = bool(row.get("_is_new")) or (row.get(self.ID) in (None, "", 0))
+
         key = (row.get(self.ID) if not is_new else -1)
         ctrls = self._edit_controls.get(key, {})
 
-        nombre_tf: ft.TextField      = ctrls.get("nombre")          # type: ignore[assignment]
-        categoria_dd: ft.Dropdown    = ctrls.get("categoria")       # type: ignore[assignment]
-        unidad_dd: ft.Dropdown       = ctrls.get("unidad")          # type: ignore[assignment]
-        minimo_tf: ft.TextField      = ctrls.get("stock_minimo")    # type: ignore[assignment]
-        costo_tf: ft.TextField       = ctrls.get("costo_unitario")  # type: ignore[assignment]
-        precio_tf: ft.TextField      = ctrls.get("precio_unitario") # type: ignore[assignment]
-        estado_dd: ft.Dropdown       = ctrls.get("estado")          # type: ignore[assignment]
+        nombre_tf: ft.TextField      = ctrls.get("nombre")           # type: ignore
+        categoria_dd: ft.Dropdown    = ctrls.get("categoria")        # type: ignore
+        unidad_dd: ft.Dropdown       = ctrls.get("unidad")           # type: ignore
+        minimo_tf: ft.TextField      = ctrls.get("stock_minimo")     # type: ignore
+        costo_tf: ft.TextField       = ctrls.get("costo_unitario")   # type: ignore
+        precio_tf: ft.TextField      = ctrls.get("precio_unitario")  # type: ignore
+        estado_dd: ft.Dropdown       = ctrls.get("estado")           # type: ignore
+        stock_tf: ft.TextField       = ctrls.get("stock_actual")     # type: ignore
 
         errores = []
         nombre_val = (nombre_tf.value or "").strip() if nombre_tf else ""
@@ -740,19 +815,18 @@ class InventarioContainer(ft.Container):
             if nombre_tf: nombre_tf.border_color = ft.colors.RED
             errores.append("Nombre inválido")
 
-        try:
-            minimo_val = float(minimo_tf.value) if minimo_tf else 0.0
-            if minimo_val < 0: raise ValueError
-        except Exception:
-            if minimo_tf: minimo_tf.border_color = ft.colors.RED
-            errores.append("Mínimo inválido")
-
-        def _float_or(tf: Optional[ft.TextField], default: float = 0.0) -> float:
-            try: return float(tf.value) if tf else default
+        def _num(tf: Optional[ft.TextField], default: float = 0.0) -> float:
+            try: return float((tf.value or "").replace(",", ".")) if tf else default
             except Exception: return default
 
-        costo_val  = _float_or(costo_tf, 0.0)
-        precio_val = _float_or(precio_tf, 0.0)
+        minimo_val  = _num(minimo_tf, 0.0)
+        if minimo_tf and minimo_val < 0:
+            minimo_tf.border_color = ft.colors.RED
+            errores.append("Mínimo inválido")
+
+        costo_val   = _num(costo_tf, 0.0)
+        precio_val  = _num(precio_tf, 0.0)
+        stock_val   = _num(stock_tf, 0.0) if stock_tf is not None else None
 
         self._safe_update()
         if errores:
@@ -760,19 +834,41 @@ class InventarioContainer(ft.Container):
             return
 
         if is_new:
-            res = self.model.crear_producto(
-                nombre=nombre_val,
-                categoria=(categoria_dd.value if categoria_dd else E_INV_CATEGORIA.INSUMO.value),
-                unidad=(unidad_dd.value if unidad_dd else E_INV_UNIDAD.PIEZA.value),
-                stock_minimo=minimo_val,
-                costo_unitario=costo_val,
-                precio_unitario=precio_val,
-                estado=(estado_dd.value if estado_dd else E_INV_ESTADO.ACTIVO.value),
-            )
-            self.fila_nueva_en_proceso = False
+            # 1) crear producto
+            try:
+                res = self.model.crear_producto(
+                    nombre=nombre_val,
+                    categoria=(categoria_dd.value if categoria_dd else E_INV_CATEGORIA.INSUMO.value),
+                    unidad=(unidad_dd.value if unidad_dd else E_INV_UNIDAD.PIEZA.value),
+                    stock_minimo=minimo_val,
+                    costo_unitario=costo_val,
+                    precio_unitario=precio_val,
+                    estado=(estado_dd.value if estado_dd else E_INV_ESTADO.ACTIVO.value),
+                    stock_inicial=(stock_val or 0.0),
+                )
+                created_with_stock = True
+            except TypeError:
+                res = self.model.crear_producto(
+                    nombre=nombre_val,
+                    categoria=(categoria_dd.value if categoria_dd else E_INV_CATEGORIA.INSUMO.value),
+                    unidad=(unidad_dd.value if unidad_dd else E_INV_UNIDAD.PIEZA.value),
+                    stock_minimo=minimo_val,
+                    costo_unitario=costo_val,
+                    precio_unitario=precio_val,
+                    estado=(estado_dd.value if estado_dd else E_INV_ESTADO.ACTIVO.value),
+                )
+                created_with_stock = False
+
             if res.get("status") == "success":
-                self._snack_ok("✅ Producto agregado.")
+                new_id = self._extract_created_id(res)
+                if not created_with_stock and stock_val and stock_val > 0:
+                    if new_id is not None:
+                        self.model.ingresar_stock(new_id, stock_val, motivo="Stock inicial", usuario="ui")
+                    else:
+                        self._snack_error("⚠️ El modelo no devolvió ID; no se pudo asentar el stock inicial automáticamente.")
+                self.fila_nueva_en_proceso = False
                 self._edit_controls.pop(-1, None)
+                self._snack_ok("✅ Producto agregado.")
                 self._refrescar_dataset()
             else:
                 self._snack_error(f"❌ {res.get('message')}")
@@ -788,6 +884,19 @@ class InventarioContainer(ft.Container):
                 precio_unitario=precio_val,
                 estado=(estado_dd.value if estado_dd else None),
             )
+            # Delta de stock si root cambió valor
+            if stock_tf is not None:
+                try:
+                    actual = float(row.get(self.STOCK) or 0)
+                    nuevo  = float((stock_tf.value or "").replace(",", ".") or actual)
+                    delta  = round(nuevo - actual, 6)
+                    if delta > 0:
+                        self.model.ingresar_stock(rid, delta, motivo="Edición stock (root)", usuario="ui")
+                    elif delta < 0:
+                        self.model.retirar_stock(rid, abs(delta), motivo="Edición stock (root)", usuario="ui")
+                except Exception:
+                    pass
+
             self.fila_editando = None
             if res.get("status") == "success":
                 self._snack_ok("✅ Cambios guardados.")
@@ -797,6 +906,9 @@ class InventarioContainer(ft.Container):
                 self._snack_error(f"❌ No se pudo guardar: {res.get('message')}")
 
     def _on_cancel_row(self, row: Dict[str, Any]):
+        # Solo root cancela ediciones/nuevos (recepcionista no puede crear, por lo que no llega aquí)
+        if not self.is_root:
+            return
         if row.get("_is_new") or (row.get(self.ID) in (None, "", 0)):
             self.fila_nueva_en_proceso = False
             rows = self.table_builder.get_rows()
@@ -818,6 +930,8 @@ class InventarioContainer(ft.Container):
     # Eliminar
     # =========================================================
     def _confirmar_eliminar(self, rid: int):
+        if not self.is_root:
+            return
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text("¿Eliminar producto?", color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
@@ -841,6 +955,8 @@ class InventarioContainer(ft.Container):
         self._safe_update()
 
     def _do_delete(self, _e, rid: int, dlg: ft.AlertDialog):
+        if not self.is_root:
+            return
         res = self.model.eliminar_producto(int(rid))
         self.page.close(dlg)
         if res.get("status") == "success":
@@ -853,6 +969,9 @@ class InventarioContainer(ft.Container):
     # Fila NUEVA
     # =========================================================
     def _insertar_fila_nueva(self, _e=None):
+        if not self.can_add:
+            self._snack_error("❌ Solo el usuario root puede agregar productos.")
+            return
         if self.fila_nueva_en_proceso:
             self._snack_ok("ℹ️ Ya hay un registro nuevo en proceso.")
             return
@@ -863,7 +982,7 @@ class InventarioContainer(ft.Container):
             self.NOMBRE: "",
             self.CATEG: E_INV_CATEGORIA.INSUMO.value,
             self.UNIDAD: E_INV_UNIDAD.PIEZA.value,
-            self.STOCK: 0.0,  # read-only en UI
+            self.STOCK: "",   # root ingresará stock inicial
             self.MINIMO: "",
             self.COSTO: "",
             self.PRECIO: "",
@@ -876,6 +995,13 @@ class InventarioContainer(ft.Container):
     # Movimientos (diálogo rápido)
     # =========================================================
     def _open_mov_dialog(self, row: Dict[str, Any], tipo: str):
+        if not self.can_move:
+            self._snack_error("❌ No tienes permisos para registrar movimientos.")
+            return
+        if tipo not in (E_INV_MOV.ENTRADA.value, E_INV_MOV.SALIDA.value):
+            self._snack_error("❌ Operación no permitida.")
+            return
+
         rid = int(row.get(self.ID))
         nombre = row.get(self.NOMBRE, "")
         tf_qty = ft.TextField(label="Cantidad", keyboard_type=ft.KeyboardType.NUMBER, autofocus=True)
@@ -884,14 +1010,11 @@ class InventarioContainer(ft.Container):
         def _do_ok(_):
             try:
                 qty = float(tf_qty.value or "0")
-                if qty < 0: raise ValueError
+                if qty <= 0: raise ValueError
                 if tipo == E_INV_MOV.ENTRADA.value:
                     res = self.model.ingresar_stock(rid, qty, motivo="Entrada UI", usuario="ui")
-                elif tipo == E_INV_MOV.SALIDA.value:
-                    res = self.model.retirar_stock(rid, qty, motivo="Salida UI", usuario="ui")
                 else:
-                    res = self.model.ajustar_stock(rid, qty, motivo="Ajuste UI", usuario="ui")
-
+                    res = self.model.retirar_stock(rid, qty, motivo="Salida UI", usuario="ui")
                 self.page.close(dlg)
                 if res.get("status") == "success":
                     self._snack_ok("✅ Movimiento registrado.")
@@ -918,16 +1041,21 @@ class InventarioContainer(ft.Container):
     # Import / Export (placeholders)
     # =========================================================
     def _on_importar(self):
+        if not self.can_import_export:
+            self._snack_error("❌ Solo el usuario root puede importar.")
+            return
         self._snack_ok("ℹ️ Importar inventario: pendiente.")
 
     def _on_exportar(self):
+        if not self.can_import_export:
+            self._snack_error("❌ Solo el usuario root puede exportar.")
+            return
         self._snack_ok("ℹ️ Exportar inventario: pendiente.")
 
     # =========================================================
     # Notificaciones
     # =========================================================
     def _on_low_stock_alert(self, alerta: Dict[str, Any]):
-        # llamado desde InventarioModel.set_on_low_stock()
         self._snack_error(alerta.get("message", "⚠️ Stock bajo"))
 
     def _snack_ok(self, msg: str):

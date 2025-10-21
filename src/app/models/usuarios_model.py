@@ -1,5 +1,3 @@
-# app/models/usuarios_model.py
-
 from typing import Optional, Dict, List, Tuple
 from app.config.db.database_mysql import DatabaseMysql
 from app.core.enums.e_usuarios import E_USUARIOS, E_USU_ROL, E_USER_ESTADO
@@ -14,10 +12,10 @@ class UsuariosModel:
     Usuarios de aplicación (login/autorización).
     Esquema: username, password(hash), rol, estado_usr, fecha_creacion.
     Incluye:
-      - CRUD completo
-      - Autenticación con verificación de hash + rehash/migración transparente
-      - Salvaguardas para no desactivar/eliminar el último root activo
-      - Mapa de 'capabilities' para habilitar/ocultar funciones en la UI
+    - CRUD completo
+    - Autenticación con verificación de hash + rehash/migración transparente
+    - Salvaguardas para no desactivar/eliminar el último root activo
+    - Mapa de 'capabilities' para habilitar/ocultar funciones en la UI
     """
 
     # ------- Capacidades por rol (la UI decide qué mostrar) -------
@@ -96,7 +94,7 @@ class UsuariosModel:
                 q = f"""
                 INSERT INTO {E_USUARIOS.TABLE.value}
                     ({E_USUARIOS.USERNAME.value}, {E_USUARIOS.PASSWORD.value},
-                     {E_USUARIOS.ROL.value}, {E_USUARIOS.ESTADO_USR.value})
+                    {E_USUARIOS.ROL.value}, {E_USUARIOS.ESTADO_USR.value})
                 VALUES (%s, %s, %s, %s)
                 """
                 self.db.run_query(q, ("root", pw_hash, E_USU_ROL.ROOT.value, E_USER_ESTADO.ACTIVO.value))
@@ -111,24 +109,27 @@ class UsuariosModel:
         return [DBSanitizer.to_safe(r) for r in (rows or [])]
 
     def _username_existe(self, username: str, exclude_id: Optional[int] = None) -> bool:
+        username_norm = (username or "").strip().lower()
         cond = ""
-        params: Tuple = (username,)
+        params: Tuple = (username_norm,)
         if exclude_id is not None:
             cond = f" AND {E_USUARIOS.ID.value} <> %s"
-            params = (username, exclude_id)
+            params = (username_norm, exclude_id)
         q = f"""
-            SELECT 1 FROM {E_USUARIOS.TABLE.value}
-            WHERE {E_USUARIOS.USERNAME.value} = %s {cond}
-            LIMIT 1
+            SELECT COUNT(*) AS c
+            FROM {E_USUARIOS.TABLE.value}
+            WHERE LOWER(TRIM({E_USUARIOS.USERNAME.value})) = %s {cond}
         """
-        return self.db.get_data(q, params, dictionary=True) is not None
+        row = self.db.get_data(q, params, dictionary=True)
+        return int((row or {}).get("c", 0)) > 0
+
 
     def _conteo_root_activo(self) -> int:
         q = f"""
             SELECT COUNT(*) AS c
             FROM {E_USUARIOS.TABLE.value}
             WHERE {E_USUARIOS.ROL.value} = %s
-              AND {E_USUARIOS.ESTADO_USR.value} = %s
+            AND {E_USUARIOS.ESTADO_USR.value} = %s
         """
         row = self.db.get_data(q, (E_USU_ROL.ROOT.value, E_USER_ESTADO.ACTIVO.value), dictionary=True)
         return int((row or {}).get("c", 0))
@@ -136,16 +137,17 @@ class UsuariosModel:
     # ===================== Autenticación =====================
     def autenticar(self, username: str, password: str) -> Optional[Dict]:
         """
-        Busca por username y estado=activo, verifica hash y re-hashea si hace falta.
-        Devuelve el usuario + 'capabilities' para la UI si es válido; si no, None.
+        Busca por username normalizado (trim+lower) y estado=activo,
+        verifica hash y realiza rehash si es necesario.
         """
         try:
+            username_norm = (username or "").strip().lower()
             q = f"""
             SELECT * FROM {E_USUARIOS.TABLE.value}
-            WHERE {E_USUARIOS.USERNAME.value} = %s
-              AND {E_USUARIOS.ESTADO_USR.value} = %s
+            WHERE LOWER(TRIM({E_USUARIOS.USERNAME.value})) = %s
+            AND {E_USUARIOS.ESTADO_USR.value} = %s
             """
-            row = self.db.get_data(q, (username, E_USER_ESTADO.ACTIVO.value), dictionary=True)
+            row = self.db.get_data(q, (username_norm, E_USER_ESTADO.ACTIVO.value), dictionary=True)
             row = self._safe(row)
             if not row:
                 return None
@@ -154,7 +156,7 @@ class UsuariosModel:
             if not verify_password(password, stored):
                 return None
 
-            # Rehash/migración si es necesario (incluye caso legacy)
+            # Rehash/migración si hace falta
             new_hash = rehash_if_needed(password, stored)
             if new_hash:
                 uq = f"""
@@ -178,8 +180,16 @@ class UsuariosModel:
         return self._safe(self.db.get_data(q, (user_id,), dictionary=True))
 
     def get_by_username(self, username: str) -> Optional[Dict]:
-        q = f"SELECT * FROM {E_USUARIOS.TABLE.value} WHERE {E_USUARIOS.USERNAME.value} = %s"
-        return self._safe(self.db.get_data(q, (username,), dictionary=True))
+        """
+        Obtiene usuario por username normalizado.
+        """
+        username_norm = (username or "").strip().lower()
+        q = f"""
+            SELECT * FROM {E_USUARIOS.TABLE.value}
+            WHERE LOWER(TRIM({E_USUARIOS.USERNAME.value})) = %s
+            LIMIT 1
+        """
+        return self._safe(self.db.get_data(q, (username_norm,), dictionary=True))
 
     def listar(self, rol: Optional[str] = None, estado: Optional[str] = None) -> List[Dict]:
         conds, params = [], []
@@ -200,11 +210,17 @@ class UsuariosModel:
 
     # ===================== Mutaciones (CRUD) =====================
     def crear_usuario(self, username: str, password: str,
-                      rol: str = E_USU_ROL.RECEPCIONISTA.value,
-                      estado: str = E_USER_ESTADO.ACTIVO.value) -> Dict:
+                    rol: str = E_USU_ROL.RECEPCIONISTA.value,
+                    estado: str = E_USER_ESTADO.ACTIVO.value) -> Dict:
         try:
-            if self._username_existe(username):
+            username_norm = (username or "").strip().lower()
+            if not username_norm or len(username_norm) < 3:
+                return {"status": "error", "message": "Username inválido (mín. 3 caracteres)."}
+            if not password:
+                return {"status": "error", "message": "La contraseña es obligatoria."}
+            if self._username_existe(username_norm):
                 return {"status": "error", "message": "El username ya existe."}
+
             if rol not in (E_USU_ROL.ROOT.value, E_USU_ROL.RECEPCIONISTA.value):
                 return {"status": "error", "message": "Rol inválido."}
             if estado not in (E_USER_ESTADO.ACTIVO.value, E_USER_ESTADO.INACTIVO.value):
@@ -214,49 +230,62 @@ class UsuariosModel:
             q = f"""
             INSERT INTO {E_USUARIOS.TABLE.value}
                 ({E_USUARIOS.USERNAME.value}, {E_USUARIOS.PASSWORD.value},
-                 {E_USUARIOS.ROL.value}, {E_USUARIOS.ESTADO_USR.value})
+                {E_USUARIOS.ROL.value}, {E_USUARIOS.ESTADO_USR.value})
             VALUES (%s, %s, %s, %s)
             """
-            self.db.run_query(q, (username, pw_hash, rol, estado))
+            self.db.run_query(q, (username_norm, pw_hash, rol, estado))
             return {"status": "success", "message": "Usuario creado."}
         except Exception as ex:
-            return {"status": "error", "message": str(ex)}
+            msg = str(ex)
+            if "1062" in msg or "Duplicate entry" in msg:
+                return {"status": "error", "message": "El username ya existe."}
+            return {"status": "error", "message": msg}
 
     def actualizar_usuario(self, user_id: int, *,
-                           username: Optional[str] = None,
-                           password: Optional[str] = None,
-                           rol: Optional[str] = None,
-                           estado: Optional[str] = None) -> Dict:
+                        username: Optional[str] = None,
+                        password: Optional[str] = None,
+                        rol: Optional[str] = None,
+                        estado: Optional[str] = None) -> Dict:
         try:
             sets: List[str] = []
             params: List = []
 
             current = self.get_by_id(user_id)
 
+            # Username (normalizado)
             if username is not None:
-                if self._username_existe(username, exclude_id=user_id):
+                username_norm = (username or "").strip().lower()
+                if len(username_norm) < 3:
+                    return {"status": "error", "message": "Username inválido (mín. 3 caracteres)."}
+                if self._username_existe(username_norm, exclude_id=user_id):
                     return {"status": "error", "message": "El username ya existe."}
-                sets.append(f"{E_USUARIOS.USERNAME.value} = %s"); params.append(username)
+                sets.append(f"{E_USUARIOS.USERNAME.value} = %s"); params.append(username_norm)
 
+            # Password (si viene None no cambia; si viene "" lo ignoramos)
             if password is not None:
-                pw_hash = hash_password(password)
-                sets.append(f"{E_USUARIOS.PASSWORD.value} = %s"); params.append(pw_hash)
+                if password == "":
+                    pass
+                else:
+                    pw_hash = hash_password(password)
+                    sets.append(f"{E_USUARIOS.PASSWORD.value} = %s"); params.append(pw_hash)
 
+            # Rol
             if rol is not None:
                 if rol not in (E_USU_ROL.ROOT.value, E_USU_ROL.RECEPCIONISTA.value):
                     return {"status": "error", "message": "Rol inválido."}
                 if current and current.get(E_USUARIOS.ROL.value) == E_USU_ROL.ROOT.value \
-                   and rol == E_USU_ROL.RECEPCIONISTA.value \
-                   and self._conteo_root_activo() <= 1:
+                and rol == E_USU_ROL.RECEPCIONISTA.value \
+                and self._conteo_root_activo() <= 1:
                     return {"status": "error", "message": "No puedes quitar el rol root del único root activo."}
                 sets.append(f"{E_USUARIOS.ROL.value} = %s"); params.append(rol)
 
+            # Estado
             if estado is not None:
                 if estado not in (E_USER_ESTADO.ACTIVO.value, E_USER_ESTADO.INACTIVO.value):
                     return {"status": "error", "message": "Estado inválido."}
                 if current and current.get(E_USUARIOS.ROL.value) == E_USU_ROL.ROOT.value \
-                   and estado == E_USER_ESTADO.INACTIVO.value \
-                   and self._conteo_root_activo() <= 1:
+                and estado == E_USER_ESTADO.INACTIVO.value \
+                and self._conteo_root_activo() <= 1:
                     return {"status": "error", "message": "No puedes desactivar el único usuario root."}
                 sets.append(f"{E_USUARIOS.ESTADO_USR.value} = %s"); params.append(estado)
 
@@ -287,7 +316,7 @@ class UsuariosModel:
         try:
             current = self.get_by_id(user_id)
             if current and current.get(E_USUARIOS.ROL.value) == E_USU_ROL.ROOT.value \
-               and self._conteo_root_activo() <= 1:
+            and self._conteo_root_activo() <= 1:
                 return {"status": "error", "message": "No puedes eliminar el único usuario root activo."}
             q = f"DELETE FROM {E_USUARIOS.TABLE.value} WHERE {E_USUARIOS.ID.value} = %s"
             self.db.run_query(q, (user_id,))
