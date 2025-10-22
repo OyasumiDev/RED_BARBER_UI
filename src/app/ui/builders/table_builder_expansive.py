@@ -191,13 +191,7 @@ class TableBuilderExpansive:
                 spacing=4,
             )
         else:
-            content = ft.Row(
-                [
-                    boton_editar(lambda e, r=row: self.on_edit and self.on_edit(r)),
-                    boton_borrar(lambda e, r=row: self.on_delete and self.on_delete(r)),
-                ],
-                spacing=4,
-            )
+            content = ft.Container(width=self.actions_width, alignment=ft.alignment.center_right)
         return ft.Container(content, width=self.actions_width, alignment=ft.alignment.center_right)
 
     def _row_key(self, row: Dict[str, Any], idx: int) -> str:
@@ -255,6 +249,63 @@ class TableBuilderExpansive:
             self._auto_scroll_to_new()
 
     def refresh(self) -> None:
+        self._rebuild_rows()
+
+    # -----------------------------
+    # API complementaria (compatibilidad)
+    # -----------------------------
+    def _row_index_by_id(self, row_id: Any) -> Optional[int]:
+        if row_id is None:
+            return None
+        if self.row_id_key:
+            for idx, row in enumerate(self._rows):
+                if row.get(self.row_id_key) == row_id:
+                    return idx
+        else:
+            for idx, row in enumerate(self._rows):
+                if row is row_id:
+                    return idx
+        return None
+
+    def find_row(self, row_id: Any) -> Optional[Dict[str, Any]]:
+        idx = self._row_index_by_id(row_id)
+        return None if idx is None else self._rows[idx]
+
+    def get_rows(self) -> List[Dict[str, Any]]:
+        return list(self._rows)
+
+    def insert_row(self, row: Dict[str, Any], position: Any = "end") -> None:
+        if not isinstance(row, dict):
+            return
+        target_id = row.get(self.row_id_key) if self.row_id_key else None
+        existing_idx = self._row_index_by_id(target_id)
+        if existing_idx is not None:
+            self._rows[existing_idx] = row
+        else:
+            if isinstance(position, int):
+                insert_idx = max(0, min(int(position), len(self._rows)))
+            elif isinstance(position, str) and position.lower() == "start":
+                insert_idx = 0
+            else:
+                insert_idx = len(self._rows)
+            self._rows.insert(insert_idx, row)
+        self._rows = self._apply_sort_if_needed(self._rows)
+        self._rebuild_rows()
+
+    def expand_row(self, row_id: Any) -> None:
+        idx = self._row_index_by_id(row_id)
+        if idx is None:
+            return
+        key = self._row_key(self._rows[idx], idx)
+        self._expanded_keys.add(key)
+        self._rebuild_rows()
+
+    def collapse_row(self, row_id: Any) -> None:
+        idx = self._row_index_by_id(row_id)
+        if idx is None:
+            return
+        key = self._row_key(self._rows[idx], idx)
+        self._expanded_keys.discard(key)
         self._rebuild_rows()
 
     # -----------------------------
