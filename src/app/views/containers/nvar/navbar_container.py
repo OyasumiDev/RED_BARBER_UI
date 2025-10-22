@@ -149,7 +149,7 @@ class NavBarContainer(ft.Container):
         user_icon = icon_root if (rol == "root" or username == "root") else icon_user
         user_icon = user_icon or icon_user_fallback  # fallback final
 
-        return [
+        items: List[Dict[str, Any]] = [
             {
                 "icon_src": user_icon,
                 "label": "Mi perfil",
@@ -157,28 +157,51 @@ class NavBarContainer(ft.Container):
                 "route": None,
                 "key": "usuario",
             },
-            {"icon_src": "assets/buttons/home-area-button.png", "label": "Inicio", "tooltip": "Ir a inicio", "route": "/home", "key": "home"},
-            {"icon_src": "assets/buttons/employees-button.png", "label": "Trabajadores", "tooltip": "Gestión de trabajadores", "route": "/trabajadores", "key": "trabajadores"},
-            {"icon_src": "assets/buttons/inventario-area-button.png", "label": "Inventario", "tooltip": "Gestión de inventario", "route": "/inventario", "key": "inventario"},
-
-            # ✅ Nueva área Agenda
-            {"icon_src": "assets/buttons/agenda-area-button.png",
-            "label": "Agenda",
-            "tooltip": "Agenda de citas y horarios",
-            "route": "/agenda",
-            "key": "agenda"},
-
-            {"icon_src": "assets/buttons/user-manager-area-button.png",
-            "label": "Usuarios",
-            "tooltip": "Ajustes de usuarios",
-            "route": "/users-settings",
-            "key": "users-settings"},
-
-            {"icon_src": "assets/buttons/settings-button.png", "label": "Configuración", "tooltip": "Ajustes del sistema", "route": "/configuracion", "key": "configuracion"},
+            {
+                "icon_src": "assets/buttons/home-area-button.png",
+                "label": "Inicio",
+                "tooltip": "Ir a inicio",
+                "route": "/home",
+                "key": "home",
+            },
+            {
+                "icon_src": "assets/buttons/employees-button.png",
+                "label": "Trabajadores",
+                "tooltip": "Gestión de trabajadores",
+                "route": "/trabajadores",
+                "key": "trabajadores",
+            },
+            {
+                "icon_src": "assets/buttons/inventario-area-button.png",
+                "label": "Inventario",
+                "tooltip": "Gestión de inventario",
+                "route": "/inventario",
+                "key": "inventario",
+            },
+            {
+                "icon_src": "assets/buttons/agenda-area-button.png",
+                "label": "Agenda",
+                "tooltip": "Agenda de citas y horarios",
+                "route": "/agenda",
+                "key": "agenda",
+            },
+            {
+                "icon_src": "assets/buttons/user-manager-area-button.png",
+                "label": "Usuarios",
+                "tooltip": "Ajustes de usuarios",
+                "route": "/users-settings",
+                "key": "users-settings",
+            },
+            {
+                "icon_src": "assets/buttons/settings-button.png",
+                "label": "Configuración",
+                "tooltip": "Ajustes del sistema",
+                "route": "/configuracion",  # ← Settings DB
+                "key": "configuracion",
+            },
         ]
 
-
-
+        return items
 
 
     def _build_ui(self):

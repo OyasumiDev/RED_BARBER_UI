@@ -13,6 +13,7 @@ from app.views.containers.home.trabajadores.trabajadores_container import Trabaj
 from app.views.containers.home.inventario.inventario_container import InventarioContainer
 from app.views.containers.home.usuarios.users_settings_container import UsersSettingsContainer
 from app.views.containers.home.agenda.agenda_container import AgendaContainer
+from app.views.containers.settings.settings import SettingsDBContainer  
 
 
 @class_singleton
@@ -242,13 +243,21 @@ class WindowMain:
                 self._set_content([UsersSettingsContainer()], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
-            
+
             if path in ("/agenda", "/agenda-citas", "/citas"):
                 self._current_module = "agenda"
                 self._set_content([AgendaContainer()], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
 
+            # ✅ NUEVA RUTA: Configuración / Settings DB
+            if path in ("/configuracion", "/settings", "/settings-db"):
+                # Usa la clave que tengas definida en tu ThemeController para la paleta del área de settings.
+                # Si no hay una paleta específica, 'settings' o 'configuracion' caerán en el tema global sin romper nada.
+                self._current_module = "settings"  # o "configuracion" si así la nombraste en tu paleta
+                self._set_content([SettingsDBContainer(self._page)], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
 
             # Ruta no reconocida → redirigir a /home para no desincronizar UI/URL
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
@@ -258,6 +267,7 @@ class WindowMain:
 
         except Exception as e:
             print(f"❌ [ROUTE] Error manejando ruta {path}: {e}")
+
 
     def _sync_nav_selection(self, path: str):
         try:

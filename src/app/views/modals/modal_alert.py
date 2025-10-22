@@ -1,5 +1,6 @@
 import flet as ft
 from app.config.application.app_state import AppState
+# ruta: src/app/views/modals/modal_alert.py
 
 class ModalAlert:
     def __init__(

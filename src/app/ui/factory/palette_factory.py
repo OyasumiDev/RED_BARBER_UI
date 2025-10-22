@@ -45,7 +45,7 @@ class PaletteFactory:
             "ACCENT":        "#EF5350",
             "BG_COLOR":      "#0F1115",
             "FG_COLOR":      "#E5E7EB",
-            "CARD_BG":       "#1C1F26",  # antes GREY_850
+            "CARD_BG":       "#1C1F26",
             "BTN_BG":        "rgba(255,255,255,0.06)",
             "FIELD_BG":      "#101318",
             "DIVIDER_COLOR": "rgba(229,231,235,0.16)",
@@ -91,7 +91,7 @@ class PaletteFactory:
                     "DIVIDER_COLOR": ft.colors.with_opacity(0.35, ft.colors.RED_ACCENT_200),
                     "BORDER_COLOR":  ft.colors.with_opacity(0.22, ft.colors.WHITE),
                     "BTN_BG":   ft.colors.GREY_800,
-                    "CARD_BG":  "#23262D",  # antes GREY_850
+                    "CARD_BG":  "#23262D",
                     "ACCENT":   ft.colors.RED_ACCENT_200,
                 },
             },
@@ -116,7 +116,7 @@ class PaletteFactory:
                 "dark": {
                     "BG_COLOR": ft.colors.GREY_900,
                     "FG_COLOR": ft.colors.WHITE,
-                    "CARD_BG":  "#23262D",  # antes GREY_850
+                    "CARD_BG":  "#23262D",
                     "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
                     "SECTION_LINE":  ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
                     "TITLE_BG":      ft.colors.RED_700,
@@ -185,7 +185,41 @@ class PaletteFactory:
                 },
             },
 
-            # -------- NUEVO: users-settings --------
+            # -------- NUEVO: db-settings --------
+            "db-settings": {
+                "light": {
+                    "BG_COLOR":  "#F9FAFB",
+                    "FG_COLOR":  "#111827",
+                    "CARD_BG":   "#FFFFFF",
+                    "DIVIDER_COLOR": ft.colors.RED_300,
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.12, ft.colors.BLACK),
+                    "BTN_BG":   ft.colors.GREY_100,
+                    "HOVER_BG": ft.colors.with_opacity(0.06, ft.colors.RED_600),
+                    "ACCENT":   ft.colors.RED_500,
+                    "ICON_COLOR": ft.colors.BLACK,
+                    "TITLE_BG": ft.colors.RED_600,
+                    "TITLE_FG": ft.colors.WHITE,
+                    "BADGE_BG": ft.colors.RED_50,
+                    "BADGE_FG": ft.colors.RED_700,
+                },
+                "dark": {
+                    "BG_COLOR":  "#0F1115",
+                    "FG_COLOR":  "#E5E7EB",
+                    "CARD_BG":   "#1C1F26",
+                    "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.20, ft.colors.WHITE),
+                    "BTN_BG":   ft.colors.GREY_800,
+                    "HOVER_BG": ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
+                    "ACCENT":   ft.colors.RED_ACCENT_200,
+                    "ICON_COLOR": ft.colors.GREY_300,
+                    "TITLE_BG": ft.colors.RED_700,
+                    "TITLE_FG": ft.colors.WHITE,
+                    "BADGE_BG": ft.colors.with_opacity(0.14, ft.colors.RED_ACCENT_100),
+                    "BADGE_FG": ft.colors.RED_ACCENT_200,
+                },
+            },
+
+            # -------- ya existente: users-settings --------
             "users-settings": {
                 "light": {
                     "BG_COLOR":  "#F9FAFB",
@@ -195,7 +229,6 @@ class PaletteFactory:
                     "BTN_BG":   ft.colors.GREY_100,
                     "HOVER_BG": ft.colors.with_opacity(0.06, ft.colors.RED_600),
                     "ACCENT":   ft.colors.RED_500,
-                    # extras útiles
                     "HEADER":    "#7A1E1E",
                     "ROW_HOVER": "rgba(211,47,47,0.05)",
                     "BADGE_BG":  ft.colors.RED_50,
@@ -210,7 +243,6 @@ class PaletteFactory:
                     "BTN_BG":   ft.colors.GREY_800,
                     "HOVER_BG": ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
                     "ACCENT":   ft.colors.RED_ACCENT_200,
-                    # extras útiles
                     "HEADER":    "#FF8A80",
                     "ROW_HOVER": "rgba(255,82,82,0.08)",
                     "BADGE_BG":  ft.colors.with_opacity(0.14, ft.colors.RED_ACCENT_100),
@@ -223,7 +255,6 @@ class PaletteFactory:
                 "light": {"BG_COLOR": "#FAFAFA", "CARD_BG": "#FFFFFF"},
                 "dark":  {"BG_COLOR": "#0F1115", "CARD_BG": "#1C1F26"},
             },
-
             "content": {
                 "light": {"BG_COLOR": "#FAFAFA", "CARD_BG": "#FFFFFF"},
                 "dark":  {"BG_COLOR": "#0F1115", "CARD_BG": "#1C1F26"},
@@ -250,9 +281,7 @@ class PaletteFactory:
             },
         }
 
-        # ---- Aliases opcionales para el mismo esquema de colores ----
-        # Si en algún momento usas estas variantes de área/ruta,
-        # tendrán exactamente la misma paleta que "users-settings".
+        # ---- Aliases opcionales/áreas equivalentes ----
         self.register_area_palette(
             "usuarios-settings",
             light=self._areas["users-settings"]["light"],
@@ -263,6 +292,14 @@ class PaletteFactory:
             light=self._areas["users-settings"]["light"],
             dark=self._areas["users-settings"]["dark"],
         )
+
+        # Aliases para db-settings
+        for alias in ("settings-db", "database-settings", "ajustes-db", "ajustes-database", "settings"):
+            self.register_area_palette(
+                alias,
+                light=self._areas["db-settings"]["light"],
+                dark=self._areas["db-settings"]["dark"],
+            )
 
     # ---------- API ----------
     @staticmethod

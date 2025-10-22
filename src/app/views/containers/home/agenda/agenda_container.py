@@ -72,7 +72,7 @@ def _only_digits(s: str) -> str:
 
 
 # ===================================================================
-#  Agenda por día (expansible)
+#  Agenda por día (expansible) — SIN NOTAS
 # ===================================================================
 class AgendaContainer(ft.Container):
     """
@@ -80,7 +80,8 @@ class AgendaContainer(ft.Container):
     - Tabla expansible: 1 fila por día (solo si HAY citas).
     - Rango de trabajo: semana actual (lunes→domingo) sin navegación manual.
     - Integrada con Trabajadores/Servicios + Teléfono cliente.
-    - UX 14": columnas angostas, tipografías 11, acciones compactas.
+    - UX 14": columnas angostas, tipografía 11, acciones compactas.
+    - SIN campo 'Notas' en UI ni en guardado.
     """
 
     def __init__(self):
@@ -229,7 +230,7 @@ class AgendaContainer(ft.Container):
 
         columns = [
             {"key": self.GDIA, "title": "Día", "width": 180, "align": "start", "formatter": self._fmt_day_title},
-            {"key": self.GRES, "title": "Resumen", "width": 340, "align": "start", "formatter": self._fmt_day_resumen},
+            {"key": self.GRES, "title": "Resumen", "width": 360, "align": "start", "formatter": self._fmt_day_resumen},
             {"key": self.GCNT, "title": "N°", "width": 42, "align": "center",
              "formatter": lambda v, r: ft.Text(str(v or 0), size=11)},
         ]
@@ -348,7 +349,7 @@ class AgendaContainer(ft.Container):
         return ft.Text(_txt(value), size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
     # ---------------------------------------------------------------
-    # Detail builder (tabla hija por día)
+    # Detail builder (tabla hija por día) — SIN NOTAS
     # ---------------------------------------------------------------
     def _detail_builder_for_day(self, group_row: Dict[str, Any]) -> ft.Control:
         DIA = group_row[self.GDIA]  # ISO
@@ -359,31 +360,28 @@ class AgendaContainer(ft.Container):
         H_INI   = "hora_inicio"
         H_FIN   = "hora_fin"
         CLIENTE = E_AGENDA.CLIENTE_NOM.value
-        TEL     = E_AGENDA.CLIENTE_TEL.value  # NUEVO
-        SERV_ID = "servicio_id"              # UI: FK servicio
-        SERV_TX = "servicio_txt"             # UI: nombre servicio
+        TEL     = E_AGENDA.CLIENTE_TEL.value
+        SERV_ID = "servicio_id"      # UI: FK servicio
+        SERV_TX = "servicio_txt"     # UI: nombre servicio
         TRAB    = E_AGENDA.TRABAJADOR_ID.value
         EST     = E_AGENDA.ESTADO.value
-        NOTAS   = E_AGENDA.NOTAS.value
 
-        # Columnas compactas (14")
+        # Columnas compactas (14"), más anchas Cliente/Servicio aprovechando espacio
         columns = [
             {"key": H_INI,   "title": "Inicio",    "width": 58,  "align": "center",
              "formatter": lambda v, r, dia=DIA: self._fmt_hora_cell(v, r, dia, key=H_INI)},
             {"key": H_FIN,   "title": "Fin",       "width": 58,  "align": "center",
              "formatter": lambda v, r, dia=DIA: self._fmt_hora_cell(v, r, dia, key=H_FIN)},
-            {"key": CLIENTE, "title": "Cliente",   "width": 140, "align": "start",
+            {"key": CLIENTE, "title": "Cliente",   "width": 170, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_text_cell(v, r, dia, key=CLIENTE, hint='Nombre cliente')},
             {"key": TEL,     "title": "Tel.",      "width": 108, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_tel_cell(v, r, dia, key=TEL)},
-            {"key": SERV_ID, "title": "Servicio",  "width": 150, "align": "start",
+            {"key": SERV_ID, "title": "Servicio",  "width": 170, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_servicio_cell(r.get(SERV_ID), r, dia, key=SERV_ID)},
             {"key": TRAB,    "title": "Trab.",     "width": 140, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_trab_cell(v, r, dia, key=TRAB)},
             {"key": EST,     "title": "Estado",    "width": 108, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_estado_cell(v, r, dia, key=EST)},
-            {"key": NOTAS,   "title": "Notas",     "width": 150, "align": "start",
-             "formatter": lambda v, r, dia=DIA: self._fmt_text_cell(v, r, dia, key=NOTAS, hint='Notas/Ubicación')},
         ]
 
         tb = TableBuilder(
@@ -475,9 +473,9 @@ class AgendaContainer(ft.Container):
             return_format="datetime",
             width=360,
             cell_size=22,
-                title="Nueva cita",
-                subtitle="Selecciona la fecha y la hora de inicio.",
-            )
+            title="Nueva cita",
+            subtitle="Selecciona la fecha y la hora de inicio.",
+        )
 
         picker.open(self.page)
         start_dt, end_dt = self._range_bounds()
@@ -588,7 +586,6 @@ class AgendaContainer(ft.Container):
             "servicio_txt": "",
             E_AGENDA.TRABAJADOR_ID.value: None,
             E_AGENDA.ESTADO.value: E_AGENDA_ESTADO.PROGRAMADA.value,
-            E_AGENDA.NOTAS.value: "",
             "_is_new": True,
             "_editing": True,
         }
@@ -642,7 +639,7 @@ class AgendaContainer(ft.Container):
             hint_text=hint,
             text_size=11,
             content_padding=ft.padding.symmetric(horizontal=6, vertical=4),
-            width=140 if key == E_AGENDA.CLIENTE_NOM.value else 150,
+            width=170 if key == E_AGENDA.CLIENTE_NOM.value else 150,
         )
         self._apply_textfield_palette(tf)
         k = self._ensure_edit_map(dia_iso, row.get(E_AGENDA.ID.value))
@@ -711,7 +708,7 @@ class AgendaContainer(ft.Container):
             if sid is not None and nom:
                 opciones.append(ft.dropdown.Option(str(sid), nom))
 
-        dd = ft.Dropdown(value=str(value) if value is not None else None, options=opciones, width=150, dense=True)
+        dd = ft.Dropdown(value=str(value) if value is not None else None, options=opciones, width=170, dense=True)
         dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=11)
         self._edit_controls[k][key] = dd
 
@@ -869,7 +866,7 @@ class AgendaContainer(ft.Container):
         h_fin_visible = _val(ctrls.get("hora_fin"))  # visible (informativo) o sello
         cliente = _val(ctrls.get(E_AGENDA.CLIENTE_NOM.value))
         tel     = _val(ctrls.get(E_AGENDA.CLIENTE_TEL.value))
-        notas   = _val(ctrls.get(E_AGENDA.NOTAS.value))
+        # SIN NOTAS: no leemos ni guardamos notas
 
         estado_dd: ft.Dropdown = ctrls.get(E_AGENDA.ESTADO.value)  # type: ignore
         trab_dd: ft.Dropdown   = ctrls.get(E_AGENDA.TRABAJADOR_ID.value)  # type: ignore
@@ -941,7 +938,7 @@ class AgendaContainer(ft.Container):
                 fin=fin_dt,
                 todo_dia=False,
                 color=None,
-                notas=notas,
+                notas=None,  # SIN NOTAS
                 trabajador_id=trabajador_id,
                 servicio_id=servicio_id,  # FK servicio
                 cliente_nombre=cliente,
@@ -949,10 +946,6 @@ class AgendaContainer(ft.Container):
                 estado=estado,
                 created_by=uid
             )
-            if res.get("status") == "success":
-                self._snack_ok("✅ Cita creada.")
-            else:
-                self._snack_error(f"❌ {res.get('message', 'No se pudo crear')}")
         else:
             rid = int(row.get(E_AGENDA.ID.value))
             res = self.model.actualizar_cita(
@@ -962,7 +955,7 @@ class AgendaContainer(ft.Container):
                 fin=fin_dt,
                 todo_dia=False,
                 color=None,
-                notas=notas,
+                notas=None,  # SIN NOTAS
                 trabajador_id=trabajador_id,
                 servicio_id=servicio_id,  # FK servicio
                 cliente_nombre=cliente,
@@ -970,10 +963,11 @@ class AgendaContainer(ft.Container):
                 estado=estado,
                 updated_by=uid
             )
+
         if res.get("status") == "success":
             self._snack_ok("✅ Cambios guardados.")
         else:
-            self._snack_error(f"❌ {res.get('message', 'No se pudo actualizar')}")
+            self._snack_error(f"❌ {res.get('message', 'No se pudo guardar')}")
 
         self._edit_controls.pop(key, None)
         rid = row.get(E_AGENDA.ID.value)
@@ -1048,7 +1042,6 @@ class AgendaContainer(ft.Container):
             fin_dt = fin_actual
 
         titulo = row.get(E_AGENDA.TITULO.value) or row.get("servicio_txt") or None
-        notas = row.get(E_AGENDA.NOTAS.value)
         trabajador_id = row.get(E_AGENDA.TRABAJADOR_ID.value)
         if trabajador_id is not None:
             try:
@@ -1097,7 +1090,7 @@ class AgendaContainer(ft.Container):
             fin=fin_dt,
             todo_dia=todo_dia,
             color=color,
-            notas=notas,
+            notas=None,  # SIN NOTAS
             trabajador_id=trabajador_id,
             cliente_nombre=cliente_nombre,
             cliente_tel=cliente_tel,

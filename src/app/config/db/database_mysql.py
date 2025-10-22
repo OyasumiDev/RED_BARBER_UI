@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
 import mysql.connector as mysql
 from mysql.connector import Error, MySQLConnection
@@ -16,10 +16,198 @@ from app.helpers.class_singleton import class_singleton
 from app.config.db.config import DB_HOST, DB_USER, DB_PASSWORD, DB_DATABASE, DB_PORT
 from app.views.notifications.messages import mostrar_mensaje
 
+# ---- Mantenimiento (export/import/drop) ----
+from app.config.db.db_maintenance import (
+    DBMaintainer,
+    IMPORT_MODE_STANDARD,
+    IMPORT_MODE_SKIP,
+    IMPORT_MODE_OVERWRITE,
+)
+
+# ---- Overrides opcionales desde config/env (no obligatorios) ----
+try:
+    from app.config.db.config import MYSQL_BIN_DIR, MYSQLDUMP_PATH, MYSQL_CLI_PATH
+except Exception:
+    MYSQL_BIN_DIR = ""
+    MYSQLDUMP_PATH = ""
+    MYSQL_CLI_PATH = ""
 
 DictRow = dict
 TupleRow = tuple
 Params = Union[Tuple[Any, ...], List[Any]]
+
+
+# ------------------------------------------------------------
+# Descubrimiento de binarios (module-level helpers)
+# ------------------------------------------------------------
+def _program_files_dirs() -> List[Path]:
+    """Posibles raíces de instalación en Windows."""
+    dirs: List[Path] = []
+    for var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        v = os.environ.get(var)
+        if v:
+            p = Path(v)
+            if p.exists():
+                dirs.append(p)
+    # Añadimos C:\ por si acaso (Laragon / XAMPP)
+    try:
+        c = Path("C:\\")
+        if c.exists():
+            dirs.append(c)
+    except Exception:
+        pass
+    return dirs
+
+
+def _known_windows_mysql_bins() -> List[Path]:
+    """Rutas típicas en Windows para MySQL/MariaDB/XAMPP/WAMP/Laragon."""
+    candidates: List[Path] = []
+
+    # Overrides explícitos (máxima prioridad)
+    for p in (MYSQL_BIN_DIR, os.getenv("MYSQL_BIN_DIR", "")):
+        if p:
+            bp = Path(p).resolve()
+            if bp.exists():
+                candidates.append(bp)
+
+    for fp in (MYSQLDUMP_PATH, os.getenv("MYSQLDUMP_PATH", ""),
+               MYSQL_CLI_PATH, os.getenv("MYSQL_CLI_PATH", "")):
+        if fp:
+            bp = Path(fp).resolve().parent
+            if bp.exists():
+                candidates.append(bp)
+
+    # Program Files / XAMPP / WAMP / Laragon
+    pf_dirs = _program_files_dirs()
+    known_roots = [
+        # MySQL oficiales
+        "MySQL\\MySQL Server 8.0\\bin",
+        "MySQL\\MySQL Server 5.7\\bin",
+        # MariaDB
+        "MariaDB 10.11\\bin",
+        "MariaDB 10.6\\bin",
+        "MariaDB 10.5\\bin",
+        # XAMPP
+        "xampp\\mysql\\bin",
+        # WAMP (versiones varían; probamos directorio padre)
+        "wamp64\\bin\\mysql",
+        # Laragon (versiones varían)
+        "laragon\\bin\\mysql",
+    ]
+
+    for root in pf_dirs:
+        for suffix in known_roots:
+            base = (root / suffix)
+            if base.exists():
+                # WAMP/Laragon tienen subcarpetas por versión; exploramos un nivel
+                if base.name in ("mysql",):
+                    try:
+                        for child in base.iterdir():
+                            if child.is_dir() and (child / "bin").exists():
+                                candidates.append((child / "bin").resolve())
+                    except Exception:
+                        pass
+                else:
+                    candidates.append(base.resolve())
+
+    # Rutas directas conocidas fuera de env vars, por si acaso
+    extra_direct = [
+        Path(r"C:\xampp\mysql\bin"),
+        Path(r"C:\wamp64\bin\mysql\mysql8.0.31\bin"),
+        Path(r"C:\wamp64\bin\mysql\mysql8.0.30\bin"),
+        Path(r"C:\Program Files\MySQL\MySQL Server 8.0\bin"),
+        Path(r"C:\Program Files\MariaDB 10.11\bin"),
+        Path(r"C:\laragon\bin\mysql"),
+    ]
+    for ed in extra_direct:
+        if ed.exists():
+            # si es ...\mysql (Laragon), ampliar dentro
+            if ed.name == "mysql":
+                try:
+                    for child in ed.iterdir():
+                        if child.is_dir() and (child / "bin").exists():
+                            candidates.append((child / "bin").resolve())
+                except Exception:
+                    pass
+            else:
+                candidates.append(ed.resolve())
+
+    return candidates
+
+
+def _known_unix_bins() -> List[Path]:
+    """Rutas típicas en Linux/macOS."""
+    paths = [
+        Path("/usr/bin"),
+        Path("/usr/local/bin"),
+        Path("/opt/homebrew/bin"),  # macOS ARM (Homebrew)
+        Path("/opt/local/bin"),     # MacPorts
+        Path("/snap/bin"),
+    ]
+    return [p for p in paths if p.exists()]
+
+
+def _tools_folder() -> Path:
+    """Carpeta local 'tools/' junto a este archivo."""
+    return (Path(__file__).parent / "tools").resolve()
+
+
+def _candidatos_mysql() -> List[Path]:
+    """Lista consolidada de carpetas a inspeccionar para encontrar binarios."""
+    candidates: List[Path] = []
+
+    # 1) Overrides desde config/env
+    if MYSQL_BIN_DIR:
+        p = Path(MYSQL_BIN_DIR).resolve()
+        if p.exists():
+            candidates.append(p)
+
+    if MYSQLDUMP_PATH:
+        p = Path(MYSQLDUMP_PATH).resolve().parent
+        if p.exists():
+            candidates.append(p)
+
+    if MYSQL_CLI_PATH:
+        p = Path(MYSQL_CLI_PATH).resolve().parent
+        if p.exists():
+            candidates.append(p)
+
+    # 2) Rutas típicas según SO
+    if os.name == "nt":
+        candidates.extend(_known_windows_mysql_bins())
+    else:
+        candidates.extend(_known_unix_bins())
+
+    # 3) Carpeta local tools/
+    tf = _tools_folder()
+    if tf.exists():
+        candidates.append(tf)
+
+    # 4) De-dupe preservando orden
+    uniq: List[Path] = []
+    seen = set()
+    for c in candidates:
+        try:
+            rc = c.resolve()
+        except Exception:
+            continue
+        key = str(rc).lower()
+        if rc.exists() and key not in seen:
+            uniq.append(rc)
+            seen.add(key)
+
+    return uniq
+
+
+def _path_in_env(bin_dir: Path) -> bool:
+    """Verifica si bin_dir ya está en PATH (case-insensitive en Windows)."""
+    try:
+        path_sep = ";" if os.name == "nt" else ":"
+        current = os.environ.get("PATH", "")
+        parts = [p.strip().lower() for p in current.split(path_sep) if p.strip()]
+        return str(bin_dir).strip().lower() in parts
+    except Exception:
+        return False
 
 
 @class_singleton
@@ -27,18 +215,17 @@ class DatabaseMysql:
     """
     Capa de acceso a datos MySQL robusta y reutilizable.
 
-    ✔ Compatible con código existente:
+    ✔ API compatible:
         - run_query, get_data, get_data_list, execute_procedure, call_procedure,
-        get_last_insert_id, is_empty, exportar_base_datos, importar_base_datos
-        - Atributos: .database, .connection (objeto MySQLConnection)
+          get_last_insert_id, is_empty, exportar_base_datos, importar_base_datos
+        - Atributos: .database, .connection (MySQLConnection)
 
     ✨ Extras:
         - auto-reconexión (ensure_connection)
-        - fetch_scalar (obtener un solo valor)
-        - run_many (ejecución masiva)
-        - transaction() context manager (commit/rollback automático)
-        - limpieza de resultados extra de SP/triggers (while cursor.nextset(): pass)
-        - búsqueda de mysqldump/mysql en PATH o en tools/
+        - run_many, transaction()
+        - limpia resultsets residuales
+        - **Autodetección de 'mysqldump' y 'mysql'** con inyección a PATH
+        - Integración con DBMaintainer
     """
 
     def __init__(self) -> None:
@@ -52,12 +239,22 @@ class DatabaseMysql:
         # Conexión
         self.connection: Optional[MySQLConnection] = None
 
+        # Rutas resueltas de binarios
+        self._mysqldump_path: Optional[str] = None
+        self._mysql_cli_path: Optional[str] = None
+
         # Inicializa BD y conexión
         self._verificar_y_crear_base_datos()
         self.connect()
 
+        # Resolver binarios e inyectarlos al PATH (para subprocess/DBMaintainer)
+        self._ensure_mysql_bins_in_path()
+
+        # Mantenimiento (export/import/drop)
+        self.maintenance = DBMaintainer(self)
+
     # -------------------------
-    # Conexión y mantenimiento
+    # Conexión
     # -------------------------
     def connect(self) -> None:
         """Establece la conexión al servidor/BD."""
@@ -93,11 +290,9 @@ class DatabaseMysql:
             self.connect()
             return
         try:
-            # mysql.connector soporta ping()
             self.connection.ping(reconnect=True, attempts=3, delay=2)  # type: ignore[attr-defined]
         except Exception:
             try:
-                # Fallback a reconnect()
                 if not self.connection.is_connected():
                     self.connection.reconnect(attempts=3, delay=2)
             except Exception:
@@ -112,10 +307,6 @@ class DatabaseMysql:
     # -------------------------
     @contextmanager
     def _cursor(self, dictionary: bool = False):
-        """
-        Context manager para abrir/cerrar cursor de forma segura.
-        Limpia conjuntos de resultados extra (SP/triggers).
-        """
         self.ensure_connection()
         if not self.connection:
             raise RuntimeError("No hay conexión a la base de datos.")
@@ -168,17 +359,12 @@ class DatabaseMysql:
         return created
 
     # -------------------------
-    # Operaciones de escritura
+    # Escritura
     # -------------------------
     def run_query(self, query: str, params: Params = ()) -> None:
-        """
-        Ejecuta un INSERT/UPDATE/DELETE/DDL. Hace commit si todo sale bien.
-        Lanza la excepción para que el caller la maneje si lo desea.
-        """
         self.ensure_connection()
         if not self.connection:
             raise RuntimeError("No hay conexión a la base de datos.")
-
         try:
             with self._cursor() as cursor:
                 cursor.execute(query, params)
@@ -192,14 +378,9 @@ class DatabaseMysql:
             raise
 
     def run_many(self, query: str, seq_params: Iterable[Params]) -> int:
-        """
-        Ejecuta muchas veces la misma sentencia con diferentes parámetros.
-        Devuelve el total de filas afectadas.
-        """
         self.ensure_connection()
         if not self.connection:
             raise RuntimeError("No hay conexión a la base de datos.")
-
         total = 0
         try:
             with self._cursor() as cursor:
@@ -217,13 +398,6 @@ class DatabaseMysql:
 
     @contextmanager
     def transaction(self):
-        """
-        Context manager de transacción:
-            with db.transaction() as cur:
-                cur.execute(...)
-                cur.execute(...)
-            # commit automático; rollback si hay excepción
-        """
         self.ensure_connection()
         if not self.connection:
             raise RuntimeError("No hay conexión a la base de datos.")
@@ -231,7 +405,6 @@ class DatabaseMysql:
         cur = self.connection.cursor()
         try:
             yield cur
-            # limpiar resultsets residuales
             while True:
                 try:
                     if not cur.nextset():
@@ -252,17 +425,11 @@ class DatabaseMysql:
                 pass
 
     # -------------------------
-    # Operaciones de lectura
+    # Lectura
     # -------------------------
     def get_data(
         self, query: str, params: Params = (), dictionary: bool = False
     ) -> Union[DictRow, TupleRow, None]:
-        """
-        Devuelve UNA fila (o None si no hay resultados).
-        - dictionary=True -> dict
-        - dictionary=False -> tuple
-        Compatibilidad: si falla, retorna {} o () según dictionary.
-        """
         try:
             with self._cursor(dictionary=dictionary) as cursor:
                 cursor.execute(query, params)
@@ -275,10 +442,6 @@ class DatabaseMysql:
     def get_data_list(
         self, query: str, params: Params = (), dictionary: bool = False
     ) -> Union[List[DictRow], List[TupleRow]]:
-        """
-        Devuelve TODAS las filas como lista (posiblemente vacía).
-        Compatibilidad: en error, retorna [].
-        """
         try:
             with self._cursor(dictionary=dictionary) as cursor:
                 cursor.execute(query, params)
@@ -289,10 +452,6 @@ class DatabaseMysql:
             return []
 
     def fetch_scalar(self, query: str, params: Params = ()) -> Any:
-        """
-        Devuelve el primer valor de la primera fila (o None).
-        Útil para COUNT(*), MAX(), etc.
-        """
         row = self.get_data(query, params, dictionary=False)
         if not row:
             return None
@@ -302,13 +461,9 @@ class DatabaseMysql:
             return None
 
     # -------------------------
-    # Procedimientos almacenados
+    # Stored procedures
     # -------------------------
     def execute_procedure(self, procedure_name: str, params: Params = ()) -> List[DictRow]:
-        """
-        Llama un SP y devuelve la ÚLTIMA colección de resultados como lista de dicts.
-        (Compatibilidad con tu uso actual.)
-        """
         try:
             self.ensure_connection()
             if not self.connection:
@@ -327,13 +482,9 @@ class DatabaseMysql:
             return []
 
     def call_procedure(self, procedure_name: str, params: Params = ()) -> List[DictRow]:
-        """
-        Alias más corto (compatibilidad). Mismo comportamiento que execute_procedure().
-        """
         return self.execute_procedure(procedure_name, params)
 
     def get_last_insert_id(self) -> Optional[int]:
-        """Devuelve el último ID autoincrement insertado en la sesión/conexión."""
         try:
             row = self.get_data("SELECT LAST_INSERT_ID()", (), dictionary=False)
             if isinstance(row, tuple) and row:
@@ -344,13 +495,9 @@ class DatabaseMysql:
             return None
 
     # -------------------------
-    # Estado de la BD
+    # Estado
     # -------------------------
     def is_empty(self) -> bool:
-        """
-        Heurística: considera que la BD está "vacía" si estas tablas no tienen filas.
-        (Ignora excepciones por tablas inexistentes).
-        """
         tablas = [
             "empleados", "asistencias", "pagos",
             "prestamos", "desempeno", "reportes_semanales", "usuarios_app",
@@ -365,132 +512,124 @@ class DatabaseMysql:
         return True
 
     # -------------------------
-    # Exportar / Importar
+    # Descubrimiento & PATH
     # -------------------------
-    def _buscar_binario(self, nombre: str, fallback_relativo: Path) -> Optional[str]:
+    def _buscar_binario(self, nombre: str, _unused: Path | None = None) -> Optional[str]:
         """
-        Busca un ejecutable en PATH; si no, intenta en tools/ relativo a este archivo.
+        Busca un ejecutable en:
+          1) PATH del sistema (shutil.which)
+          2) Rutas candidatas conocidas (_candidatos_mysql)
+          3) tools/ (incluida en candidatos)
         """
+        # 1) PATH
         path = shutil.which(nombre)
         if path:
             return path
-        local = (Path(__file__).parent / "tools" / fallback_relativo).resolve()
-        return str(local) if local.exists() else None
 
-    def exportar_base_datos(self, ruta_destino: str) -> bool:
+        # 2) Candidatos
+        for base in _candidatos_mysql():
+            p = base / nombre
+            if p.exists():
+                return str(p.resolve())
+            # Windows: permitir sin .exe
+            if os.name == "nt" and not nombre.lower().endswith(".exe"):
+                p2 = base / (nombre + ".exe")
+                if p2.exists():
+                    return str(p2.resolve())
+        return None
+
+    def _ensure_mysql_bins_in_path(self) -> None:
         """
-        Exporta la BD completa con mysqldump.
-        - Busca 'mysqldump' en PATH o en tools/mysqldump(.exe).
+        Resuelve rutas a mysqldump/mysql y añade sus carpetas al PATH del proceso.
         """
-        try:
-            # Compatibilidad Windows/Linux
-            bin_name = "mysqldump.exe" if os.name == "nt" else "mysqldump"
-            mysqldump = self._buscar_binario(bin_name, Path("mysqldump.exe"))
-            if not mysqldump:
-                raise FileNotFoundError("No se encontró mysqldump en PATH ni en tools/.")
+        dump_name = "mysqldump.exe" if os.name == "nt" else "mysqldump"
+        cli_name = "mysql.exe" if os.name == "nt" else "mysql"
 
-            comando = [
-                mysqldump,
-                f"--user={self.user}",
-                f"--password={self.password}",
-                f"--host={self.host}",
-                f"--port={self.port}",
-                "--routines",
-                "--events",
-                "--triggers",
-                self.database,
-            ]
+        dump_path = self._buscar_binario(dump_name) or self._buscar_binario("mysqldump")
+        cli_path = self._buscar_binario(cli_name) or self._buscar_binario("mysql")
 
-            with open(ruta_destino, "w", encoding="utf-8") as salida:
-                subprocess.run(comando, stdout=salida, check=True)
+        self._mysqldump_path = dump_path
+        self._mysql_cli_path = cli_path
 
-            print(f"✅ Base de datos exportada a: {ruta_destino}")
-            return True
-        except Exception as e:
-            print(f"❌ Error al exportar la base de datos: {e}")
-            return False
+        if dump_path:
+            dump_dir = Path(dump_path).resolve().parent
+            if not _path_in_env(dump_dir):
+                sep = ";" if os.name == "nt" else ":"
+                os.environ["PATH"] = str(dump_dir) + sep + os.environ.get("PATH", "")
+            print(f"[DB] mysqldump → {dump_path}")
+        else:
+            print("[DB] ⚠️ mysqldump no localizado en PATH ni rutas conocidas.")
 
-    def importar_base_datos(self, ruta_sql: str, page: Optional[ft.Page] = None) -> bool:
-        """
-        Restaura la BD desde un .sql.
-        - Recrea el schema.
-        - Usa 'mysql' del PATH o tools/mysql(.exe).
-        """
-        try:
-            ruta = Path(ruta_sql)
-            if not ruta.exists():
-                raise FileNotFoundError("Archivo SQL no encontrado")
+        if cli_path:
+            cli_dir = Path(cli_path).resolve().parent
+            if not _path_in_env(cli_dir):
+                sep = ";" if os.name == "nt" else ":"
+                os.environ["PATH"] = str(cli_dir) + sep + os.environ.get("PATH", "")
+            print(f"[DB] mysql cli → {cli_path}")
+        else:
+            print("[DB] ⚠️ mysql (cliente) no localizado en PATH ni rutas conocidas.")
 
-            # Recrear esquema
-            tmp = mysql.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                autocommit=True,
-            )
-            cur = tmp.cursor()
-            cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
-            cur.execute(
-                f"CREATE DATABASE `{self.database}` "
-                "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-            )
-            cur.close()
-            tmp.close()
-
-            # Cliente mysql
-            bin_name = "mysql.exe" if os.name == "nt" else "mysql"
-            mysql_cli = self._buscar_binario(bin_name, Path("mysql.exe"))
-            if not mysql_cli:
-                raise FileNotFoundError("No se encontró mysql en PATH ni en tools/.")
-
-            comando = [
-                mysql_cli,
-                f"-h{self.host}",
-                f"-P{self.port}",
-                f"-u{self.user}",
-                f"-p{self.password}",
-                self.database,
-            ]
-
-            with open(ruta, "r", encoding="utf-8") as f:
-                resultado = subprocess.run(
-                    comando,
-                    stdin=f,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-
-            if resultado.returncode != 0:
-                print("❌ Error durante la importación:")
-                print(resultado.stderr)
-                if page:
-                    mostrar_mensaje(page, "Error de Importación", "Hubo un problema al importar la base de datos.")
-                return False
-
-            print("✅ Base de datos importada correctamente.")
-            if page:
-                mostrar_mensaje(page, "Importación Exitosa", "La base de datos fue importada correctamente.")
-            return True
-
-        except Exception as e:
-            print(f"❌ Error al importar la base de datos: {e}")
-            if page:
-                mostrar_mensaje(page, "Error de Importación", str(e))
-            return False
+        # Info final
+        print(f"[DB] PATH actualizado para proceso (longitud {len(os.environ.get('PATH',''))}).")
 
     # -------------------------
-    # Lectura: aliases de compatibilidad
+    # Exportar / Importar (vía DBMaintainer)
+    # -------------------------
+    def exportar_base_datos(self, ruta_destino: str, insert_mode: str = "standard") -> bool:
+        """
+        insert_mode: "standard" | "skip_duplicates" | "overwrite"
+        """
+        # Intento de export con DBMaintainer (usa PATH ya actualizado)
+        print(f"[DB] Export interno a: {ruta_destino}")
+        res = self.maintenance.export_db(ruta_destino, insert_mode=insert_mode)
+        if res.get("status") == "success":
+            print(f"✅ Export OK → {res.get('path')}")
+            return True
+        print(f"❌ Export ERROR: {res.get('message') or res.get('stderr_tail') or 'desconocido'}")
+        return False
+
+    def importar_base_datos(
+        self,
+        ruta_sql: str,
+        mode: str = "standard",
+        recreate_schema: bool = False,
+        page: Optional[ft.Page] = None,
+    ) -> bool:
+        """
+        mode: "standard" | "skip_duplicates" | "overwrite"
+        recreate_schema=True → DROP+CREATE antes de importar.
+        """
+        print(f"[DB] Import interno desde: {ruta_sql} (mode={mode}, recreate_schema={recreate_schema})")
+        res = self.maintenance.import_db(ruta_sql, mode=mode, recreate_schema=recreate_schema)
+        if res.get("status") == "success":
+            print("✅ Import OK")
+            if page:
+                mostrar_mensaje(page, "Importación Exitosa", "Datos importados correctamente.")
+            return True
+        msg = res.get("message") or res.get("stderr_tail") or "desconocido"
+        print(f"❌ Import ERROR: {msg}")
+        if page:
+            mostrar_mensaje(page, "Error de Importación", str(msg))
+        return False
+
+    def dropear_base_datos(self, bootstrap_cb=None) -> bool:
+        """
+        DROP DB + reconectar + re-crear schema vacío; luego puedes invocar bootstrap_cb.
+        """
+        print("[DB] Drop database solicitado...")
+        res = self.maintenance.drop_database(force_reconnect=True, bootstrap_cb=bootstrap_cb)
+        if res.get("status") == "success":
+            print("🗑️ DB eliminada y reconectada.")
+            return True
+        print(f"❌ Drop ERROR: {res.get('message') or 'desconocido'}")
+        return False
+
+    # -------------------------
+    # Lectura: aliases compat
     # -------------------------
     def get_all(
         self, query: str, params: Params = (), dictionary: bool = True
     ) -> List[DictRow] | List[TupleRow]:
-        """
-        Alias compatible: retorna TODAS las filas.
-        - dictionary=True -> lista de dicts
-        - dictionary=False -> lista de tuplas
-        """
         try:
             with self._cursor(dictionary=dictionary) as cursor:
                 cursor.execute(query, params)
@@ -503,11 +642,6 @@ class DatabaseMysql:
     def get_one(
         self, query: str, params: Params = (), dictionary: bool = True
     ) -> DictRow | TupleRow | None:
-        """
-        Alias compatible: retorna UNA fila o None si no hay resultados.
-        - dictionary=True -> dict o None
-        - dictionary=False -> tuple o None
-        """
         try:
             with self._cursor(dictionary=dictionary) as cursor:
                 cursor.execute(query, params)
@@ -517,29 +651,19 @@ class DatabaseMysql:
             print(f"❌ Error en get_one: {e}\nSQL: {query}\nParams: {params}")
             return None
 
-    # Aliases adicionales (por si otros módulos los usan)
     def fetch_all(
         self, query: str, params: Params = (), dictionary: bool = True
     ) -> List[DictRow] | List[TupleRow]:
-        """Alias a get_all()."""
         return self.get_all(query, params, dictionary=dictionary)
 
     def fetch_one(
         self, query: str, params: Params = (), dictionary: bool = True
     ) -> DictRow | TupleRow | None:
-        """Alias a get_one()."""
         return self.get_one(query, params, dictionary=dictionary)
 
     def select(self, query: str, params: Params = ()) -> List[DictRow]:
-        """
-        Alias estilo 'select': siempre retorna lista de dicts (dictionary=True).
-        """
         rows = self.get_all(query, params, dictionary=True)
-        # Garantiza tipo list[dict]
         return rows if isinstance(rows, list) else []
 
     def query(self, query: str, params: Params = ()) -> List[DictRow]:
-        """
-        Alias genérico a select() (en algunos proyectos se usa 'query' para SELECT).
-        """
         return self.select(query, params)

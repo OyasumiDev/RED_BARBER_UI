@@ -20,20 +20,12 @@ logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-# -----------------------------------------------------------------------------
-#  🧩 BLOQUE ÚNICO DE TAMAÑOS (ajústalo libremente)
-# -----------------------------------------------------------------------------
-#
-#  Idea: aquí concentro todo lo "ajustable" (ancho, columnas, espaciados y
-#  tamaños de texto). Así puedes ir tocando valores poco a poco hasta que
-#  queden perfectos en tu pantalla sin andar buscando en el código.
-#
-#  CONSEJO: cambia 1 valor a la vez, guarda, recarga y ve el resultado.
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 🧩 BLOQUE ÚNICO DE TAMAÑOS / COMPORTAMIENTO
+# =============================================================================
 UI = {
-    # Ancho máximo "legible" del contenido central; si lo quieres ocupar todo,
-    # pon None o un número más grande.
-    "INNER_MAX_WIDTH": 1240,
+    # Ancho máximo "legible" del contenido central
+    "INNER_MAX_WIDTH": 1100,
 
     # Padding general del contenedor raíz (px)
     "ROOT_PADDING": 16,
@@ -41,15 +33,24 @@ UI = {
     # Espaciados de secciones y grillas (px)
     "SECTION_SPACING": 14,
     "GRID_SPACING": 10,        # separación horizontal entre tarjetas
-    "GRID_RUN_SPACING": 10,    # separación vertical entre filas
+    "GRID_RUN_SPACING": 14,    # separación vertical entre filas (subí un poco para que respiren)
+
     "CARD_PADDING": 12,
     "CARD_RADIUS": 12,
 
-    # Breakpoints y columnas para tarjetas (post-its y stock)
-    # Menos de 700 → 1 col; menos de 980 → 2 col; menos de 1300 → 3 col; >=1300 → 4 col
+    # Breakpoints base (para 1, 2, 3 o 4 columnas)
     "BREAKPOINTS": [700, 980, 1300],
 
-    # Tamaños de tipografías
+    # Forzar tope de columnas por área (1 en pantallas chicas, máximo el valor indicado)
+    "MAX_COLS": {
+        "postits": 2,  # ← Cada 2 stickers por fila
+        "stock":   2,  # ← Cada 2 stickers por fila
+    },
+
+    # Ocultar por completo el dashboard de prueba (stickers grises)
+    "SHOW_DASHBOARD": False,
+
+    # Tipografías
     "TITLE_SIZE": 22,
     "SECTION_TITLE_SIZE": 16,
     "POSTIT": {
@@ -66,8 +67,9 @@ UI = {
     },
 }
 
-# Helper: devuelve cuántas columnas según ancho y lista de breakpoints
+# Helper: nº de columnas según ancho + breakpoints
 _def_bp = UI["BREAKPOINTS"]
+
 
 def _cols_for_width(w: int) -> int:
     if w < _def_bp[0]:
@@ -83,7 +85,8 @@ class HomeContainer(ft.Container):
     AREA = "home"
 
     def __init__(self):
-        super().__init__(expand=True, padding=UI["ROOT_PADDING"])  # más compacto para 768p
+        super().__init__(expand=True, padding=UI["ROOT_PADDING"])
+
         self.app_state = AppState()
         self.page = self.app_state.get_page()
         self.theme_ctrl = ThemeController()
@@ -97,16 +100,17 @@ class HomeContainer(ft.Container):
         # Modo debug
         self.DEBUG = True
 
-        # Layout dinámico (cuántas tarjetas por fila)
-        self._cols_postits = 3   # target base; se recalcula en _recompute_layout()
-        self._cols_stock = 3
+        # Layout dinámico (se recalcula en _recompute_layout)
+        self._cols_postits = 2
+        self._cols_stock = 2
 
         self._anim_tasks: dict[str, asyncio.Task] = {}
 
         # ---------- UI ----------
         self.title_text = ft.Text(
             f"Bienvenido, {self.nombre} ({self.rol})",
-            size=UI["TITLE_SIZE"], weight="bold", color=self.colors.get("TITLE_FG", ft.colors.WHITE),
+            size=UI["TITLE_SIZE"], weight="bold",
+            color=self.colors.get("TITLE_FG", ft.colors.WHITE),
         )
         self.header_band = ft.Container(
             bgcolor=self.colors.get("TITLE_BG", ft.colors.RED_600),
@@ -120,13 +124,19 @@ class HomeContainer(ft.Container):
         )
 
         # Próximas citas
-        self.postits_title = ft.Text("Próximas citas (hoy)", size=UI["SECTION_TITLE_SIZE"], weight="bold",
-                                     color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
-        self.btn_refresh_postits = ft.IconButton(
-            icon=ft.icons.REFRESH, tooltip="Actualizar próximas citas", on_click=lambda e: self._reload_postits()
+        self.postits_title = ft.Text(
+            "Próximas citas (hoy)",
+            size=UI["SECTION_TITLE_SIZE"], weight="bold",
+            color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
         )
-        self.postits_header = ft.Row([self.postits_title, self.btn_refresh_postits],
-                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        self.btn_refresh_postits = ft.IconButton(
+            icon=ft.icons.REFRESH, tooltip="Actualizar próximas citas",
+            on_click=lambda e: self._reload_postits(),
+        )
+        self.postits_header = ft.Row(
+            [self.postits_title, self.btn_refresh_postits],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
         self.postits_grid = ft.ResponsiveRow(
             controls=[],
             alignment=ft.MainAxisAlignment.START,
@@ -137,10 +147,12 @@ class HomeContainer(ft.Container):
         self.agenda_postits_area = ft.Column([self.postits_header, self.postits_grid], spacing=8, visible=True)
 
         # Stock bajo
-        self.stock_title = ft.Text("Stock bajo", size=UI["SECTION_TITLE_SIZE"], weight="bold",
-                                   color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+        self.stock_title = ft.Text(
+            "Stock bajo", size=UI["SECTION_TITLE_SIZE"], weight="bold",
+            color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
+        )
         self.btn_refresh_stock = ft.IconButton(
-            icon=ft.icons.REFRESH, tooltip="Actualizar stock bajo", on_click=lambda e: self._reload_low_stock()
+            icon=ft.icons.REFRESH, tooltip="Actualizar stock bajo", on_click=lambda e: self._reload_low_stock(),
         )
         self.stock_header = ft.Row([self.stock_title, self.btn_refresh_stock],
                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
@@ -153,32 +165,22 @@ class HomeContainer(ft.Container):
         )
         self.stock_area = ft.Column([self.stock_header, self.stock_grid], spacing=8, visible=True)
 
-        # Dashboard (placeholder inicial)
-        self.dashboard_area = self._build_dashboard()
+        # Dashboard de prueba (REMOVIDO por defecto)
+        self.dashboard_area: Optional[ft.Control] = None
+        if UI["SHOW_DASHBOARD"]:
+            self.dashboard_area = self._build_dashboard()
 
-        # --- Layout raíz centrado, SIN usar max_width (evita el error) ---
-        # Guardamos referencia a la columna principal para poder reemplazar el
-        # dashboard dinámicamente sin reconstruir todo.
+        # Columna principal
         self.main_column = ft.Column(
-            [
-                self.header_band,
-                self.section_line,
-                self.agenda_postits_area,
-                self.stock_area,
-                self.dashboard_area,
-            ],
+            [self.header_band, self.section_line, self.agenda_postits_area, self.stock_area]
+            + ([self.dashboard_area] if self.dashboard_area else []),
             scroll=ft.ScrollMode.AUTO, expand=True, spacing=UI["SECTION_SPACING"],
         )
-        self._dashboard_index = 4  # posición del dashboard dentro de main_column.controls
 
-        # Centrado + ancho legible: usamos un Row con un Container de ancho fijo
-        center_container = ft.Container(
-            content=self.main_column,
-            width=UI["INNER_MAX_WIDTH"],  # <— aquí ajustas el ancho "máximo"
-        )
+        # Centro y ancho legible
+        center_container = ft.Container(content=self.main_column, width=UI["INNER_MAX_WIDTH"])
         self.inner = ft.Container(
-            alignment=ft.alignment.top_center,
-            expand=True,
+            alignment=ft.alignment.top_center, expand=True,
             content=ft.Row([center_container], alignment=ft.MainAxisAlignment.CENTER),
         )
         self.content = self.inner
@@ -207,7 +209,8 @@ class HomeContainer(ft.Container):
         self.colors = self._get_colors_area()
         self._apply_colors()
         self._recompute_layout()
-        self._rebuild_dashboard()  # ahora sí reemplaza en pantalla
+        if UI["SHOW_DASHBOARD"]:
+            self._rebuild_dashboard()  # solo si está habilitado
         self._reload_postits()
         self._reload_low_stock()
         self._safe_update()
@@ -231,11 +234,12 @@ class HomeContainer(ft.Container):
         self._safe_update()
 
     def _recompute_layout(self):
-        """Calcula nº de columnas según ancho disponible (usa UI["BREAKPOINTS"])."""
+        """Calcula nº de columnas según ancho y aplica tope por área (2 por fila)."""
         w = getattr(self.page, "width", UI["INNER_MAX_WIDTH"] or 1200) or 1200
-        self._cols_postits = _cols_for_width(w)
-        self._cols_stock = _cols_for_width(w)
-        self._dbg(f"[LAYOUT] width={w} → postits_cols={self._cols_postits} stock_cols={self._cols_stock}")
+        base = _cols_for_width(w)
+        self._cols_postits = min(base, UI["MAX_COLS"]["postits"])
+        self._cols_stock = min(base, UI["MAX_COLS"]["stock"])
+        self._dbg(f"[LAYOUT] width={w} → base={base} | postits_cols={self._cols_postits} stock_cols={self._cols_stock}")
 
     def _apply_grid_cols(self, grid: ft.ResponsiveRow, cols: int):
         unit = max(1, 12 // max(1, cols))
@@ -277,7 +281,7 @@ class HomeContainer(ft.Container):
         self._refresh_cards()
 
     def _refresh_cards(self):
-        if isinstance(self.dashboard_area, ft.Row):
+        if self.dashboard_area and isinstance(self.dashboard_area, ft.Row):
             for c in self.dashboard_area.controls:
                 if isinstance(c, ft.Container):
                     c.bgcolor = self.colors.get("CARD_BG", self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT))
@@ -319,7 +323,7 @@ class HomeContainer(ft.Container):
         except Exception:
             return {}
 
-    # ---------- dashboards ----------
+    # ---------- dashboards (deshabilitado por defecto) ----------
     def _build_dashboard(self) -> ft.Row:
         rol_method = {
             "barbero": self._barbero_dashboard,
@@ -332,16 +336,12 @@ class HomeContainer(ft.Container):
         return (rol_method() if rol_method else ft.Row([self._card("Rol no reconocido", "—")], expand=True))
 
     def _rebuild_dashboard(self):
-        # Construye y REEMPLAZA el control dentro de la columna central
+        if not UI["SHOW_DASHBOARD"]:
+            return
         self.dashboard_area = self._build_dashboard()
-        try:
-            self.main_column.controls[self._dashboard_index] = self.dashboard_area
-        except Exception:
-            # por si cambia el orden en el futuro
-            if len(self.main_column.controls) >= 5:
-                self.main_column.controls[-1] = self.dashboard_area
-            else:
-                self.main_column.controls.append(self.dashboard_area)
+        # Reemplaza/inyecta al final si hiciera falta
+        if self.dashboard_area not in self.main_column.controls:
+            self.main_column.controls.append(self.dashboard_area)
         self._refresh_cards()
         self._safe_update()
 
@@ -376,12 +376,8 @@ class HomeContainer(ft.Container):
             bgcolor=self.colors.get("CARD_BG", self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT)),
             border_radius=UI["CARD_RADIUS"], padding=UI["CARD_PADDING"], expand=True,
             content=ft.Column(
-                [
-                    ft.Text(title, size=16, weight="bold",
-                            color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
-                    ft.Text(value, size=22, weight="bold",
-                            color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
-                ],
+                [ft.Text(title, size=16, weight="bold", color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
+                 ft.Text(value, size=22, weight="bold", color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))],
                 spacing=6, alignment=ft.MainAxisAlignment.START,
                 horizontal_alignment=ft.CrossAxisAlignment.START,
             ),
@@ -478,9 +474,11 @@ class HomeContainer(ft.Container):
             self.postits_grid.controls.clear()
             if not proximas:
                 self.postits_grid.controls.append(
-                    ft.Container(content=ft.Text("No hay citas programadas para hoy.",
-                                                 color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
-                                 col={"xs": 12})
+                    ft.Container(
+                        content=ft.Text("No hay citas programadas para hoy.",
+                                        color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
+                        col={"xs": 12},
+                    )
                 )
             else:
                 colmap = self._col_units(self._cols_postits)
@@ -502,7 +500,8 @@ class HomeContainer(ft.Container):
                                 content=ft.Column(
                                     [
                                         ft.Text(f"Error en cita ID={rid} (estado={est})", color=ft.colors.RED_900),
-                                        ft.Text(str(ex_item), color=ft.colors.RED_900, size=11, max_lines=3, overflow=ft.TextOverflow.ELLIPSIS),
+                                        ft.Text(str(ex_item), color=ft.colors.RED_900, size=11, max_lines=3,
+                                                overflow=ft.TextOverflow.ELLIPSIS),
                                     ],
                                     spacing=4,
                                 ),
@@ -511,7 +510,6 @@ class HomeContainer(ft.Container):
                             )
                         )
 
-            # aplica columnas actuales (por si la ventana cambió)
             self._apply_grid_cols(self.postits_grid, self._cols_postits)
             self._safe_update()
         except Exception as ex:
@@ -807,7 +805,6 @@ class HomeContainer(ft.Container):
     def _start_blink(self, ctrl: ft.Container, key_suffix: str = "blink"):
         if not self._mounted or not self.page:
             return
-        # llave única por control para evitar colisiones
         k = f"{ctrl.key or id(ctrl)}-{key_suffix}"
         if k in self._anim_tasks:
             return
@@ -825,9 +822,14 @@ class HomeContainer(ft.Container):
             except asyncio.CancelledError:
                 ctrl.opacity = 1.0
                 self._safe_update()
-                return
+                raise
+            finally:
+                # limpia el registro si fue cancelada o terminó
+                self._anim_tasks.pop(k, None)
 
-        self._anim_tasks[k] = self.page.run_task(_blink_task())
+        # ⬇️ OJO: pasar la FUNCIÓN, sin paréntesis
+        task = self.page.run_task(_blink_task)
+        self._anim_tasks[k] = task
 
     def _start_shake(self, ctrl: ft.Container, duration_sec: int = 6, key_suffix: str = "shake"):
         if not self._mounted or not self.page:
@@ -851,11 +853,13 @@ class HomeContainer(ft.Container):
             except asyncio.CancelledError:
                 ctrl.offset = ft.transform.Offset(0, 0)
                 self._safe_update()
-                return
+                raise
             finally:
                 self._anim_tasks.pop(k, None)
 
-        self._anim_tasks[k] = self.page.run_task(_shake_task())
+        # ⬇️ Igual: pasar la FUNCIÓN, sin paréntesis
+        task = self.page.run_task(_shake_task)
+        self._anim_tasks[k] = task
 
     # ---------- stock ----------
     def _reload_low_stock(self):
@@ -867,9 +871,11 @@ class HomeContainer(ft.Container):
 
             if not rows:
                 self.stock_grid.controls.append(
-                    ft.Container(content=ft.Text("Sin productos en stock bajo.",
-                                                 color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
-                                 col={"xs": 12})
+                    ft.Container(
+                        content=ft.Text("Sin productos en stock bajo.",
+                                        color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
+                        col={"xs": 12},
+                    )
                 )
             else:
                 colmap = self._col_units(self._cols_stock)

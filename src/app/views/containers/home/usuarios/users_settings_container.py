@@ -19,20 +19,62 @@ from app.ui.factory.boton_factory import (
     boton_aceptar, boton_cancelar, boton_editar, boton_borrar
 )
 
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 def _txt(v: Any) -> str:
     return "" if v is None else str(v)
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
 
 class UsersSettingsContainer(ft.Container):
     """
-    Administración de usuarios:
+    Administración de usuarios (con tabla responsive):
       - Filtros: rol / estado / búsqueda por username
       - Ordenamiento por encabezado
       - Alta y edición en línea (root)
       - Acciones: editar, borrar, toggle estado (root)
       - Campo de contraseña editable en la fila (root)
       - Recepcionista: solo lectura
+      - 🆕 Ancho de columnas ajustado al espacio disponible
     """
+
+    # -------------------- knobs de tamaño (ajústalos) --------------------
+    SIZING = {
+        "base": {            # anchos "deseados"
+            "id": 76,
+            "username": 240,
+            "password": 220,
+            "rol": 160,
+            "estado": 140,
+            "creado": 200,
+        },
+        "min": {             # anchos mínimos
+            "id": 56,
+            "username": 170,
+            "password": 180,
+            "rol": 120,
+            "estado": 110,
+            "creado": 150,
+        },
+        "scale_min": 0.56,   # no comprimir por debajo de este factor
+        # ancho estimado de la barra lateral
+        "side_expanded": 260,
+        "side_collapsed": 88,
+        # ancho estimado de la columna de acciones (para calcular "avail")
+        "actions_est_root": 204,
+        "actions_est_view": 60,
+        # “regalo” de sobrante para username
+        "username_extra_max": 260,
+        # compresión adicional en pantallas comunes
+        "tight_1366": 0.98,
+        "tight_1280": 0.92,
+        # márgenes/paddings que no puede usar la tabla
+        "pad_page": 20,      # ver self.content.padding
+        "row_spacing": 10,   # separación de la toolbar vs tabla
+    }
 
     def __init__(self):
         super().__init__(expand=True)
@@ -58,6 +100,12 @@ class UsersSettingsContainer(ft.Container):
         # Estado UI
         self._mounted = False
         self._theme_listener = None
+
+        # Estado de layout (para estimar barra lateral)
+        self._nav_expanded: bool = False
+        self._layout_ctrl = None
+        self._layout_unsub = None
+        self._try_subscribe_layout_changes()
 
         self.fila_editando: Optional[int] = None
         self.fila_nueva_en_proceso: bool = False
@@ -107,7 +155,6 @@ class UsersSettingsContainer(ft.Container):
                 ft.dropdown.Option(E_USU_ROL.ROOT.value, "root"),
                 ft.dropdown.Option(E_USU_ROL.RECEPCIONISTA.value, "recepcionista"),
             ],
-            # Permite dejarlo en None para "todos" (sin opción "Todos" en el menú)
             value=self.filter_role,
             on_change=lambda e: self._aplicar_rol((e.control.value or "").strip() or None),
         )
@@ -134,7 +181,6 @@ class UsersSettingsContainer(ft.Container):
         )
         self._apply_textfield_palette(self.search_input)
 
-        # Botón para limpiar TODOS los filtros (rol, estado y búsqueda)
         self.filters_clear_btn = ft.IconButton(
             icon=ft.icons.CLEAR_ALL,
             tooltip="Limpiar filtros",
@@ -162,12 +208,10 @@ class UsersSettingsContainer(ft.Container):
 
         self.add_button = _pill(ft.icons.ADD, "Agregar", lambda e: self._insertar_fila_nueva())
 
-        # Layout raíz: botón Agregar primero y filtros a un lado
         toolbar_controls = []
         if not self.read_only:
             toolbar_controls.append(self.add_button)
         toolbar_controls += [self.dd_roles, self.dd_estado, self.search_input, self.filters_clear_btn]
-
 
         self.content = ft.Container(
             expand=True,
@@ -199,17 +243,8 @@ class UsersSettingsContainer(ft.Container):
         self.CREADO = E_USUARIOS.FECHA_CREACION.value
         self.PASSWORD = E_USUARIOS.PASSWORD.value  # para columna condicional (root)
 
-        columns = [
-            {"key": self.ID, "title": "ID", "width": 80, "align": "center", "formatter": self._fmt_id},
-            {"key": self.USERNAME, "title": "Usuario", "width": 240, "align": "start", "formatter": self._fmt_username},
-            {"key": self.ROL, "title": "Rol", "width": 160, "align": "start", "formatter": self._fmt_rol},
-            {"key": self.ESTADO, "title": "Estado", "width": 140, "align": "start", "formatter": self._fmt_estado},
-        ]
-        # Columna de contraseña SOLO para root
-        if self.is_root:
-            columns.insert(2, {"key": self.PASSWORD, "title": "Contraseña", "width": 220, "align": "start", "formatter": self._fmt_password})
-
-        columns.append({"key": self.CREADO, "title": "Creado", "width": 200, "align": "start", "formatter": self._fmt_creado})
+        # columnas responsive
+        columns = self._compute_table_columns()
 
         self.table_builder = TableBuilder(
             group="usuarios",
@@ -245,12 +280,14 @@ class UsersSettingsContainer(ft.Container):
         except Exception:
             self._theme_listener = None
 
-    # Ciclo de vida
+    # --------------------- ciclo de vida ---------------------
     def did_mount(self):
         self._mounted = True
         self.page = self.app_state.get_page()
         self.colors = self.app_state.get_colors()
         self._recolor_ui()
+        # recalcular por si el ancho real difiere
+        self._rebuild_table_widths()
         self._safe_update()
 
     def will_unmount(self):
@@ -261,7 +298,147 @@ class UsersSettingsContainer(ft.Container):
             except Exception:
                 pass
             self._theme_listener = None
+        # desuscribir de layout si pudimos suscribirnos
+        try:
+            if self._layout_ctrl and self._layout_unsub and callable(self._layout_unsub):
+                self._layout_unsub()  # algunos controllers exponen unsubscribe como callback
+        except Exception:
+            pass
 
+    # --------------------- responsive widths ---------------------
+    def _try_subscribe_layout_changes(self):
+        """
+        Se intenta suscribir a cambios del layout (barra lateral expandida/colapsada).
+        Funciona si existe un LayoutController compatible; si no, el cálculo
+        usa un heurístico por ancho de página.
+        """
+        try:
+            # distintos proyectos exponen distintas APIs; probamos varias
+            from app.ui.layout.layout_controller import LayoutController  # type: ignore
+            ctrl = None
+            if hasattr(LayoutController, "instance") and callable(LayoutController.instance):
+                ctrl = LayoutController.instance()
+            else:
+                ctrl = LayoutController()  # type: ignore
+            self._layout_ctrl = ctrl
+
+            def handler(*args, **kwargs):
+                expanded = False
+                # buscamos un bool en args/kwargs
+                for v in list(args) + list(kwargs.values()):
+                    if isinstance(v, bool):
+                        expanded = v
+                        break
+                self._nav_expanded = bool(expanded)
+                self._rebuild_table_widths()
+
+            # métodos posibles: add_listener / subscribe / on_change
+            if hasattr(ctrl, "add_listener"):
+                ctrl.add_listener(handler)        # type: ignore
+                self._layout_unsub = getattr(ctrl, "remove_listener", None)
+            elif hasattr(ctrl, "subscribe"):
+                self._layout_unsub = ctrl.subscribe(handler)  # type: ignore
+            elif hasattr(ctrl, "on_change"):
+                ctrl.on_change(handler)           # type: ignore
+            else:
+                self._layout_ctrl = None  # no soportado; caemos al heurístico
+        except Exception:
+            self._layout_ctrl = None
+
+    def _compute_table_columns(self) -> List[Dict[str, Any]]:
+        S = self.SIZING
+        base = dict(S["base"])
+        minw = dict(S["min"])
+
+        # columnas presentes
+        keys: List[str] = ["id", "username", "rol", "estado", "creado"]
+        if self.is_root:
+            keys.insert(2, "password")  # después de username
+
+        # ancho disponible
+        page_w = float(getattr(self.page, "width", 1280) or 1280)
+        # estimar barra lateral
+        side_w = S["side_expanded"] if self._nav_expanded or page_w >= 1100 else S["side_collapsed"]
+        actions_est = S["actions_est_root"] if self.is_root else S["actions_est_view"]
+        pad_page = S["pad_page"]; row_spacing = S["row_spacing"]
+        margins = pad_page * 2 + row_spacing + 16 + 12
+        avail = max(600.0, page_w - side_w - actions_est - margins)
+
+        sum_base = float(sum(base[k] for k in keys))
+        scale = _clamp(avail / sum_base, S["scale_min"], 1.0)
+        # “apriete” extra en resoluciones comunes
+        if page_w <= 1366:
+            scale = _clamp(scale * S["tight_1366"], S["scale_min"], 1.0)
+        if page_w <= 1280:
+            scale = _clamp(scale * S["tight_1280"], S["scale_min"], 1.0)
+
+        # anchos por columna
+        widths: Dict[str, int] = {}
+        for k in keys:
+            widths[k] = max(int(base[k] * scale), int(minw[k]))
+
+        # slack → dárselo a username
+        slack = int(avail - sum(widths.values()))
+        if slack > 0:
+            give = min(slack, int(S["username_extra_max"]))
+            widths["username"] += give
+            slack -= give
+
+        # construir definición de columnas para TableBuilder
+        cols: List[Dict[str, Any]] = [
+            {"key": E_USUARIOS.ID.value, "title": "ID", "width": widths["id"], "align": "center", "formatter": self._fmt_id},
+            {"key": E_USUARIOS.USERNAME.value, "title": "Usuario", "width": widths["username"], "align": "start", "formatter": self._fmt_username},
+        ]
+        if self.is_root:
+            cols.append({"key": E_USUARIOS.PASSWORD.value, "title": "Contraseña", "width": widths["password"], "align": "start", "formatter": self._fmt_password})
+
+        cols += [
+            {"key": E_USUARIOS.ROL.value, "title": "Rol", "width": widths["rol"], "align": "start", "formatter": self._fmt_rol},
+            {"key": E_USUARIOS.ESTADO_USR.value, "title": "Estado", "width": widths["estado"], "align": "start", "formatter": self._fmt_estado},
+            {"key": E_USUARIOS.FECHA_CREACION.value, "title": "Creado", "width": widths["creado"], "align": "start", "formatter": self._fmt_creado},
+        ]
+        return cols
+
+    def _rebuild_table_widths(self):
+        """Reconstruye la tabla con nuevas columnas/anchos manteniendo filas y controladores."""
+        try:
+            rows = self.table_builder.get_rows()
+        except Exception:
+            rows = self._aplicar_orden(self._fetch())
+
+        new_columns = self._compute_table_columns()
+
+        # recrear TableBuilder (API simple y segura)
+        new_tb = TableBuilder(
+            group="usuarios",
+            sort_manager=self.sort_manager,
+            columns=new_columns,
+            on_sort_change=self._on_sort_change,
+            on_accept=self._on_accept_row if self.is_root else None,
+            on_cancel=self._on_cancel_row if self.is_root else None,
+            on_edit=self._on_edit_row if self.is_root else None,
+            on_delete=self._on_delete_row if self.is_root else None,
+            id_key=self.ID,
+            dense_text=True,
+            auto_scroll_new=True,
+            actions_title="Acciones",
+        )
+        new_tb.attach_actions_builder(self._actions_builder)
+        if ScrollTableController and self.stc:
+            new_tb.attach_scroll_controller(self.stc)
+
+        # swap visual
+        if not self.table_container.content.controls:
+            self.table_container.content.controls.append(new_tb.build())
+        else:
+            self.table_container.content.controls[0] = new_tb.build()
+
+        # swap instancia y dataset
+        self.table_builder = new_tb
+        self.table_builder.set_rows(rows)
+        self._safe_update()
+
+    # --------------------- util de página ---------------------
     def _safe_update(self):
         p = getattr(self, "page", None)
         if p:
@@ -270,7 +447,7 @@ class UsersSettingsContainer(ft.Container):
             except AssertionError:
                 pass
 
-    # Theme
+    # --------------------- theme ---------------------
     def _apply_textfield_palette(self, tf: ft.TextField):
         tf.bgcolor = self.colors.get("CARD_BG", self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT))
         tf.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
@@ -283,11 +460,11 @@ class UsersSettingsContainer(ft.Container):
     def _on_theme_changed(self):
         self.colors = self.app_state.get_colors()
         self._recolor_ui()
-        self._refrescar_dataset()
+        # el tema no cambia tamaños, pero reconstruimos por si cambió tipografía
+        self._rebuild_table_widths()
 
     def _recolor_ui(self):
         self._apply_textfield_palette(self.search_input)
-        # En _recolor_ui() reemplaza la línea del botón clear por esta
         self.filters_clear_btn.icon_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         self.dd_roles.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
         self.dd_estado.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
@@ -297,15 +474,12 @@ class UsersSettingsContainer(ft.Container):
             self.content.bgcolor = self.colors.get("BG_COLOR")
         self._safe_update()
 
-    # Filtros
-    # --------- Sección de Filtros (reemplaza estas funciones) ---------
+    # --------------------- filtros ---------------------
     def _aplicar_rol(self, rol: Optional[str]):
-        # rol = None -> sin filtro (muestra todos)
         self.filter_role = rol if rol in (E_USU_ROL.ROOT.value, E_USU_ROL.RECEPCIONISTA.value) else None
         self._refrescar_dataset()
 
     def _aplicar_estado(self, estado: Optional[str]):
-        # estado = None -> sin filtro (muestra todos)
         self.filter_state = estado if estado in (E_USER_ESTADO.ACTIVO.value, E_USER_ESTADO.INACTIVO.value) else None
         self._refrescar_dataset()
 
@@ -315,11 +489,9 @@ class UsersSettingsContainer(ft.Container):
         self._refrescar_dataset()
 
     def _limpiar_filtros(self):
-        # Reset de valores internos...
         self.filter_role = None
         self.filter_state = None
         self.filter_username = None
-        # ...y de los controles visuales
         self.dd_roles.value = None
         self.dd_estado.value = None
         self.search_input.value = ""
@@ -330,8 +502,7 @@ class UsersSettingsContainer(ft.Container):
             self.filter_username = None
             self._refrescar_dataset()
 
-
-    # Orden por encabezado
+    # --------------------- orden ---------------------
     def _on_sort_change(self, campo: str, *_):
         prev = self.orden_actual.get(campo)
         nuevo = "desc" if prev == "asc" else "asc"
@@ -339,7 +510,7 @@ class UsersSettingsContainer(ft.Container):
         self.orden_actual[campo] = nuevo
         self._refrescar_dataset()
 
-    # Dataset / Render
+    # --------------------- dataset / render ---------------------
     def _fetch(self) -> List[Dict[str, Any]]:
         rows = self.model.listar(rol=self.filter_role, estado=self.filter_state) or []
         if self.filter_username:
@@ -370,7 +541,7 @@ class UsersSettingsContainer(ft.Container):
         self.table_builder.set_rows(datos)
         self._safe_update()
 
-    # Formatters
+    # --------------------- formatters ---------------------
     def _fmt_id(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         return ft.Text(_txt(value), size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
@@ -401,13 +572,11 @@ class UsersSettingsContainer(ft.Container):
         return tf
 
     def _fmt_password(self, value: Any, row: Dict[str, Any]) -> ft.Control:
-        # Por seguridad, la contraseña actual no se conoce (solo se guarda hash).
-        # En edición, permitir escribir una nueva y revelar/ocultar mientras se escribe.
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         rid = row.get(self.ID)
         en_edicion = self.is_root and ((self.fila_editando == rid) or bool(row.get("_is_new")))
         if not en_edicion:
-            return ft.Text("••••••", size=12, color=fg)  # solo indicador visual
+            return ft.Text("••••••", size=12, color=fg)
 
         tf = ft.TextField(
             value="",
@@ -475,7 +644,7 @@ class UsersSettingsContainer(ft.Container):
         if key not in self._edit_controls:
             self._edit_controls[key] = {}
 
-    # Actions
+    # --------------------- acciones ---------------------
     def _actions_builder(self, row: Dict[str, Any], is_new: bool) -> ft.Control:
         if self.read_only:
             return ft.Text("—", size=12, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
@@ -491,15 +660,13 @@ class UsersSettingsContainer(ft.Container):
                 on_click=on_click,
             )
 
-        # NUEVA o EN EDICIÓN → aceptar / cancelar
         if is_new or self.fila_editando == rid:
             return ft.Row(
                 [boton_aceptar(lambda e, r=row: self._on_accept_row(r)),
-                boton_cancelar(lambda e, r=row: self._on_cancel_row(r))],
+                 boton_cancelar(lambda e, r=row: self._on_cancel_row(r))],
                 spacing=6, alignment=ft.MainAxisAlignment.START
             )
 
-        # NORMAL → (sin botón de "reseto" de contraseña)
         toggle_icon = ft.icons.TOGGLE_ON if estado == E_USER_ESTADO.ACTIVO.value else ft.icons.TOGGLE_OFF
         return ft.Row(
             [
@@ -510,7 +677,7 @@ class UsersSettingsContainer(ft.Container):
             spacing=6, alignment=ft.MainAxisAlignment.START
         )
 
-    # Callbacks acciones
+    # --------------------- callbacks acciones ---------------------
     def _on_edit_row(self, row: Dict[str, Any]):
         if self.read_only:
             return
@@ -547,27 +714,25 @@ class UsersSettingsContainer(ft.Container):
             self._snack_error("❌ " + " / ".join(errores))
             return
 
-        # Construir cambios
         rol_val = (rol_dd.value if rol_dd else None)
         est_val = (est_dd.value if est_dd else None)
         pw_val = (pw_tf.value or "").strip() if pw_tf else ""
 
         if is_new:
-            # Crear requiere password inicial
             if not pw_val:
                 if pw_tf: pw_tf.border_color = ft.colors.RED
                 self._snack_error("❌ La contraseña inicial es obligatoria.")
                 return
             res = self.model.crear_usuario(username=un_val, password=pw_val,
-                                        rol=rol_val or E_USU_ROL.RECEPCIONISTA.value,
-                                        estado=est_val or E_USER_ESTADO.ACTIVO.value)
+                                           rol=rol_val or E_USU_ROL.RECEPCIONISTA.value,
+                                           estado=est_val or E_USER_ESTADO.ACTIVO.value)
             self.fila_nueva_en_proceso = False
         else:
             rid = int(row.get(self.ID))
             res = self.model.actualizar_usuario(
                 rid,
                 username=un_val,
-                password=(pw_val if pw_val else None),  # si vacío, no cambia
+                password=(pw_val if pw_val else None),
                 rol=rol_val,
                 estado=est_val,
             )
@@ -600,7 +765,7 @@ class UsersSettingsContainer(ft.Container):
         self._edit_controls.pop(rid if rid is not None else -1, None)
         self._refrescar_dataset()
 
-    # Alta / Estado / Delete
+    # --------------------- alta / estado / delete ---------------------
     def _insertar_fila_nueva(self, _e=None):
         if self.read_only:
             return
@@ -641,7 +806,7 @@ class UsersSettingsContainer(ft.Container):
             actions=[
                 ft.TextButton("Cancelar", on_click=lambda e: self.page.close(dlg)),
                 ft.ElevatedButton("Eliminar", icon=ft.icons.DELETE_OUTLINE, bgcolor=ft.colors.RED_600, color=ft.colors.WHITE,
-                                on_click=lambda e: self._do_delete(e, rid, dlg)),
+                                  on_click=lambda e: self._do_delete(e, rid, dlg)),
             ],
         )
         self.page.dialog = dlg
@@ -657,7 +822,7 @@ class UsersSettingsContainer(ft.Container):
         else:
             self._snack_error(f"❌ No se pudo eliminar: {res.get('message')}")
 
-    # Notificaciones
+    # --------------------- snacks ---------------------
     def _snack_ok(self, msg: str):
         if not self.page:
             return
@@ -674,3 +839,4 @@ class UsersSettingsContainer(ft.Container):
         self.page.snack_bar = ft.SnackBar(ft.Text(msg, color=ft.colors.WHITE), bgcolor=ft.colors.RED_600)
         self.page.snack_bar.open = True
         self._safe_update()
+    
