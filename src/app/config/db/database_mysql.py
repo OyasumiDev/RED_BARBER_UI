@@ -575,54 +575,93 @@ class DatabaseMysql:
     # -------------------------
     # Exportar / Importar (vía DBMaintainer)
     # -------------------------
+# -------------------------
+# Exportar / Importar / Drop (con logs a Settings)
+# -------------------------
     def exportar_base_datos(self, ruta_destino: str, insert_mode: str = "standard") -> bool:
         """
+        Exporta TODO el esquema + datos a un archivo .sql.
         insert_mode: "standard" | "skip_duplicates" | "overwrite"
         """
-        # Intento de export con DBMaintainer (usa PATH ya actualizado)
-        print(f"[DB] Export interno a: {ruta_destino}")
+        def slog(msg: str):
+            try:
+                # Import perezoso para evitar ciclos de importación
+                from app.views.containers.settings.settings import _log as _settings_log
+                _settings_log(msg)
+            except Exception:
+                print(f"[SettingsDB] {msg}")
+
+        slog(f"Export solicitado → {ruta_destino} (insert_mode={insert_mode})")
         res = self.maintenance.export_db(ruta_destino, insert_mode=insert_mode)
+
         if res.get("status") == "success":
-            print(f"✅ Export OK → {res.get('path')}")
+            path = res.get("path")
+            ms = res.get("elapsed_ms")
+            slog(f"✅ Export OK → {path}  ({ms} ms)")
             return True
-        print(f"❌ Export ERROR: {res.get('message') or res.get('stderr_tail') or 'desconocido'}")
+
+        err = res.get("message") or res.get("stderr_tail") or "desconocido"
+        code = res.get("code")
+        slog(f"❌ Export ERROR (code={code}): {err}")
         return False
+
 
     def importar_base_datos(
         self,
         ruta_sql: str,
         mode: str = "standard",
         recreate_schema: bool = False,
-        page: Optional[ft.Page] = None,
+        page: Optional[ft.Page] = None,   # se mantiene por compatibilidad; NO se usa aquí
     ) -> bool:
         """
+        Importa un .sql en la DB actual.
         mode: "standard" | "skip_duplicates" | "overwrite"
         recreate_schema=True → DROP+CREATE antes de importar.
         """
-        print(f"[DB] Import interno desde: {ruta_sql} (mode={mode}, recreate_schema={recreate_schema})")
+        def slog(msg: str):
+            try:
+                from app.views.containers.settings.settings import _log as _settings_log
+                _settings_log(msg)
+            except Exception:
+                print(f"[SettingsDB] {msg}")
+
+        slog(f"Import solicitado ← {ruta_sql} (mode={mode}, recreate_schema={recreate_schema})")
         res = self.maintenance.import_db(ruta_sql, mode=mode, recreate_schema=recreate_schema)
+
         if res.get("status") == "success":
-            print("✅ Import OK")
-            if page:
-                mostrar_mensaje(page, "Importación Exitosa", "Datos importados correctamente.")
+            ms = res.get("elapsed_ms")
+            slog(f"✅ Import OK  ({ms} ms)")
+            # Nada de UI aquí; el contenedor Settings muestra el modal en su callback.
             return True
-        msg = res.get("message") or res.get("stderr_tail") or "desconocido"
-        print(f"❌ Import ERROR: {msg}")
-        if page:
-            mostrar_mensaje(page, "Error de Importación", str(msg))
+
+        err = res.get("message") or res.get("stderr_tail") or res.get("stdout_tail") or "desconocido"
+        code = res.get("code")
+        slog(f"❌ Import ERROR (code={code}): {err}")
         return False
+
 
     def dropear_base_datos(self, bootstrap_cb=None) -> bool:
         """
-        DROP DB + reconectar + re-crear schema vacío; luego puedes invocar bootstrap_cb.
+        DROP DATABASE + reconectar + re-crear schema vacío; luego ejecuta bootstrap_cb si se provee.
         """
-        print("[DB] Drop database solicitado...")
+        def slog(msg: str):
+            try:
+                from app.views.containers.settings.settings import _log as _settings_log
+                _settings_log(msg)
+            except Exception:
+                print(f"[SettingsDB] {msg}")
+
+        slog("Drop solicitado… (force_reconnect=True)")
         res = self.maintenance.drop_database(force_reconnect=True, bootstrap_cb=bootstrap_cb)
+
         if res.get("status") == "success":
-            print("🗑️ DB eliminada y reconectada.")
+            slog("🗑️ DB eliminada y reconectada correctamente.")
             return True
-        print(f"❌ Drop ERROR: {res.get('message') or 'desconocido'}")
+
+        err = res.get("message") or res.get("stderr_tail") or "desconocido"
+        slog(f"❌ Drop ERROR: {err}")
         return False
+
 
     # -------------------------
     # Lectura: aliases compat

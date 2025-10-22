@@ -3,13 +3,17 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from typing import Optional, Callable
+import threading
 import flet as ft
+
+# Bootstrap principal (post drop / post import)
+from app.config.db.bootstrap_db import bootstrap_after_drop
 
 # ------------------- LOG helper -------------------
 def _log(msg: str):
     print(f"[SettingsDB] {msg}")
 
-# Invokers (100% genéricos)
+# Invokers
 try:
     from app.ui.io.file_save import FileSaver
     from app.ui.io.file_open import FileOpener
@@ -18,7 +22,7 @@ except Exception as e:
     _log(f"❌ No se pudieron importar los invokers genéricos: {e}")
     raise
 
-# DB (ruta estable en tu proyecto)
+# DB
 try:
     from app.config.db.database_mysql import DatabaseMysql
     _log("DatabaseMysql importado desde app.config.db.database_mysql.")
@@ -26,71 +30,13 @@ except Exception as e:
     _log(f"❌ No se pudo importar DatabaseMysql: {e}")
     raise
 
-# ---------------- Mensajes / Modales ----------------
-# Solo notifications.messages -> ModalAlert -> SnackBar
-
-ModalAlert = None  # se asignará si está disponible
-
-try:
-    # firma: (page, titulo, mensaje, texto_boton="Aceptar", on_close=None)
-    from app.views.notifications.messages import mostrar_mensaje
-    _log("mostrar_mensaje tomado de app.views.notifications.messages")
-except Exception as e1:
-    _log(f"⚠️ No se encontró notifications.messages: {e1}")
-    try:
-        from app.views.modals.modal_alert import ModalAlert as _ModalAlert
-        ModalAlert = _ModalAlert
-        _log("Usando ModalAlert como fallback para mostrar_mensaje")
-
-        def mostrar_mensaje(page: ft.Page, titulo: str, mensaje: str, texto_boton: str = "Aceptar", on_close=None):
-            try:
-                ModalAlert.mostrar_info(titulo, mensaje)
-                # ModalAlert no expone on_close; ejecutamos cleanup inmediatamente.
-                if callable(on_close):
-                    on_close(None)
-            except Exception as ex:
-                _log(f"⚠️ Error usando ModalAlert, cayendo a SnackBar: {ex}")
-                sb = ft.SnackBar(ft.Text(f"{titulo}: {mensaje}"))
-                try:
-                    page.snack_bar = sb
-                    sb.open = True
-                    page.update()
-                except Exception:
-                    pass
-                if callable(on_close):
-                    try:
-                        on_close(None)
-                    except Exception:
-                        pass
-    except Exception as e3:
-        _log(f"⚠️ No se encontró ModalAlert, usando SnackBar simple: {e3}")
-
-        def mostrar_mensaje(page: ft.Page, titulo: str, mensaje: str, texto_boton: str = "Aceptar", on_close=None):
-            sb = ft.SnackBar(ft.Text(f"{titulo}: {mensaje}"))
-            try:
-                page.snack_bar = sb
-                sb.open = True
-                page.update()
-            except Exception:
-                pass
-            if callable(on_close):
-                try:
-                    on_close(None)
-                except Exception:
-                    pass
-
 
 class SettingsDBContainer(ft.Container):
     """
-    Centro modal de mantenimiento MySQL (intermediario de I/O):
-      • Exportar base (SQL)
-      • Importar base (SQL) con sobrescritura (OVERWRITE/REPLACE) de duplicados
-      • Dropear base (con reconexión)
-
-    Flujo de modales:
-      • Importar:  Guardar e importar |  Importar |  Cancelar
-      • Exportar:  Explicación -> Guardar
-      • Dropear:   Guardar y borrar |  Borrar |  Cancelar
+    Centro de mantenimiento MySQL:
+      • Exportar (SQL)
+      • Importar (SQL) OVERWRITE/REPLACE
+      • Dropear base (con bootstrap posterior)
     """
 
     def __init__(self, page: ft.Page):
@@ -98,14 +44,9 @@ class SettingsDBContainer(ft.Container):
         _log("Inicializando SettingsDBContainer...")
         self.page = page
         self.db = DatabaseMysql()
-
-        # Estado simple
         self._busy = False
 
-        # Invokers
         self._setup_invokers()
-
-        # UI
         self._build_ui()
         _log("SettingsDBContainer listo.")
 
@@ -115,8 +56,7 @@ class SettingsDBContainer(ft.Container):
 
     def _safe_update(self):
         try:
-            self.update()
-            return
+            self.update();  return
         except Exception as e:
             _log(f"⚠️ self.update falló: {e}")
         p = self._get_page()
@@ -146,7 +86,8 @@ class SettingsDBContainer(ft.Container):
         for btn in (getattr(self, "btn_export_sql", None),
                     getattr(self, "btn_import_sql", None),
                     getattr(self, "btn_drop_db", None)):
-            if isinstance(btn, (ft.ElevatedButton, ft.OutlinedButton, ft.FilledButton, ft.TextButton)):
+            if isinstance(btn, (ft.ElevatedButton, ft.OutlinedButton,
+                                ft.FilledButton, ft.TextButton)):
                 btn.disabled = not enabled
         _log(f"Botones {'habilitados' if enabled else 'deshabilitados'}.")
         self._safe_update()
@@ -165,92 +106,160 @@ class SettingsDBContainer(ft.Container):
             _log("✅ Estado ocupado OFF.")
 
     def _post_action_cleanup(self):
-        """
-        Rehabilita controles y asegura que los FilePicker sigan operativos
-        tras cerrar el modal de resultado.
-        """
         _log("🔧 Post-action cleanup: reinyectando Page y re-habilitando botones.")
         self._busy = False
         self._set_buttons_enabled(True)
         self._ensure_invoker_page()
-        # No cerramos el modal aquí; esto lo hace el propio notifications.messages.
-        try:
-            self._safe_update()
-        except Exception as e:
-            _log(f"⚠️ Error en _post_action_cleanup.update: {e}")
+        self._safe_update()
 
-    def _run_bg(self, target: Callable, *args, after: Optional[Callable] = None):
-        """Ejecuta `target` (sin bloquear UI). Llama `after(result, error)` al finalizar."""
+    # --------- BG runner: SIEMPRE threading + call_from_thread ----------
+    def _run_bg(self, work: Callable[[], object],
+                after: Optional[Callable[[object, Optional[Exception]], None]] = None):
+        """
+        Ejecuta `work` en un hilo de fondo y, al terminar,
+        llama `after(result, error)` garantizado en el hilo de UI.
+        """
         self._show_busy()
         p = self._get_page()
-        _log(f"🔧 Ejecutando tarea en background: {getattr(target, '__name__', str(target))}")
+        _log("🔧 Ejecutando tarea en background.")
 
-        # ⚠️ Aceptar *args porque Flet inyecta un argumento al worker
-        def worker(*_args, **_kwargs):
+        def worker_wrapper():
             try:
-                res = target(*args)
+                res = work()
                 return (res, None)
-            except Exception as e:
-                _log(f"❌ Excepción en worker: {e}")
-                return (None, e)
+            except Exception as ex:
+                _log(f"❌ Excepción en worker: {ex}")
+                return (None, ex)
 
-        # ⚠️ Aceptar *args porque Flet llama on_done con 1 arg (resultado)
-        def on_done(*_cb_args, **_cb_kwargs):
-            res = _cb_args[0] if _cb_args else (None, None)
+        def finish_on_main(res_tuple):
             try:
-                if isinstance(res, tuple) and len(res) == 2:
-                    result, error = res
-                else:
-                    result, error = res, None
-            except Exception as e:
-                _log(f"❌ Error en on_done desempaquetando resultado: {e}")
-                result, error = None, e
+                result, error = res_tuple
+            except Exception as ex:
+                result, error = None, ex
             finally:
                 self._hide_busy()
-
             _log(f"🧪 on_done -> result={bool(result)} error={error}")
             if callable(after):
                 try:
                     after(result, error)
-                except Exception as e:
-                    _log(f"❌ Error ejecutando callback after: {e}")
+                except Exception as ex:
+                    _log(f"❌ Error ejecutando callback after: {ex}")
 
-        if p and hasattr(p, "run_thread"):
-            p.run_thread(worker, on_done)
-        else:
-            _log("⚠️ Page sin run_thread: ejecutando en línea.")
-            result, error = worker()
-            self._hide_busy()
-            if callable(after):
+        def runner():
+            res = worker_wrapper()
+            pg = self._get_page()
+            if pg and hasattr(pg, "call_from_thread"):
+                pg.call_from_thread(lambda: finish_on_main(res))
+            else:
+                # Último recurso: ejecutar directo (no ideal, pero evita quedarte bloqueado)
+                finish_on_main(res)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    # -------------------------- Mensajes propios --------------------------
+    def _show_message(self, title: str, message: str, *,
+                      kind: str = "info",
+                      on_close: Optional[Callable] = None,
+                      button_text: str = "Aceptar"):
+        """
+        Modal simple sin dependencias externas.
+        kind: "info" | "success" | "error"
+        """
+        p = self._get_page()
+        if not p:
+            _log(f"⚠️ No hay Page para mostrar mensaje: {title}")
+            return
+
+        self._close_any_dialog()  # evita quedarte con un dialog previo abierto
+
+        color = {
+            "info": ft.colors.PRIMARY,
+            "success": ft.colors.GREEN_500,
+            "error": ft.colors.RED_400
+        }.get(kind, ft.colors.PRIMARY)
+
+        icon = {
+            "info": ft.icons.INFO_OUTLINED,
+            "success": ft.icons.CHECK_CIRCLE_OUTLINED,
+            "error": ft.icons.ERROR_OUTLINE
+        }.get(kind, ft.icons.INFO_OUTLINED)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(name=icon, color=color),
+                ft.Text(title, weight="bold", color=color),
+            ], spacing=8),
+            content=ft.Text(message),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def _ok(_):
+            try:
+                dlg.open = False
+            except Exception:
+                pass
+            if getattr(p, "dialog", None) is dlg:
+                p.dialog = None
+            try:
+                p.update()
+            except Exception:
+                pass
+            if callable(on_close):
                 try:
-                    after(result, error)
-                except Exception as e:
-                    _log(f"❌ Error en after (sync): {e}")
+                    on_close(None)
+                except Exception:
+                    pass
+
+        dlg.actions = [ft.ElevatedButton(button_text, on_click=_ok)]
+        try:
+            p.dialog = dlg
+            dlg.open = True
+            p.update()
+            _log(f"Modal mostrado: {title}")
+        except Exception as ex:
+            _log(f"⚠️ No se pudo abrir modal ({ex}); usando SnackBar.")
+            try:
+                sb = ft.SnackBar(ft.Text(f"{title}: {message}"))
+                p.snack_bar = sb
+                sb.open = True
+                p.update()
+            except Exception:
+                pass
+            if callable(on_close):
+                try:
+                    on_close(None)
+                except Exception:
+                    pass
+
+    def _info(self, titulo: str, mensaje: str, *, kind: str = "info",
+              on_close: Optional[Callable] = None):
+        # Rehabilita primero; luego muestra (para que el usuario pueda accionar)
+        if on_close is None:
+            on_close = lambda *_: self._post_action_cleanup()
+        self._post_action_cleanup()
+        self._show_message(titulo, mensaje, kind=kind, on_close=on_close)
 
     # -------------------------- Invokers --------------------------
     def _setup_invokers(self):
         _log("Configurando invokers de archivo...")
-        # Guardar SQL (export)
         self.saver_sql = FileSaver(
             page=self.page,
-            on_save=self._do_export_db_sql,           # callback tras elegir ruta
+            on_save=self._do_export_db_sql,
             save_dialog_title="Guardar base completa (SQL)",
             file_name="backup_total.sql",
             allowed_extensions=["sql"],
         )
-        # Abrir SQL (import)
         self.opener_sql = FileOpener(
             page=self.page,
-            on_select=self._do_import_db_sql_overwrite,  # callback tras seleccionar archivo
+            on_select=self._do_import_db_sql_overwrite,
             dialog_title="Selecciona archivo .sql",
             allowed_extensions=["sql"],
         )
-        # Saver temporal para flujos de “Guardar y ...”
         self._tmp_saver: Optional[FileSaver] = None
         _log("Invokers configurados correctamente.")
 
     def _ensure_invoker_page(self):
-        # Reinyecta la Page por si cambió
         try:
             self.saver_sql.page = self.page
             self.opener_sql.page = self.page
@@ -356,7 +365,7 @@ class SettingsDBContainer(ft.Container):
         )
         _log("UI construida.")
 
-    # -------------------------- Modales --------------------------
+    # -------------------------- Modales de confirmación --------------------------
     def _open_dialog(self, dlg: ft.AlertDialog):
         p = self._get_page()
         if p:
@@ -406,8 +415,7 @@ class SettingsDBContainer(ft.Container):
                 self.saver_sql.open_save()
             except Exception as e:
                 _log(f"❌ Error al abrir diálogo de guardado: {e}")
-                mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de guardado", str(e),
-                                on_close=lambda *_: self._post_action_cleanup())
+                self._info("❌ No se pudo abrir el diálogo de guardado", str(e), kind="error")
 
         dlg.actions = [
             ft.TextButton("Cancelar", on_click=_cancel),
@@ -441,8 +449,7 @@ class SettingsDBContainer(ft.Container):
                 self.opener_sql.open()
             except Exception as e:
                 _log(f"❌ Error al abrir diálogo de importación: {e}")
-                mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de importación", str(e),
-                                on_close=lambda *_: self._post_action_cleanup())
+                self._info("❌ No se pudo abrir el diálogo de importación", str(e), kind="error")
 
         def _guardar_e_importar(_):
             _log("Import SQL: usuario eligió 'Guardar e importar' → pedir ruta de backup.")
@@ -452,26 +459,26 @@ class SettingsDBContainer(ft.Container):
 
             def _after_backup_save(path: str):
                 _log(f"Import SQL: ruta guardado pre-import -> {path}")
-                # Exporta y luego abre picker de importación
+
                 def work():
                     return self._db_export_sql_internal(path)
 
                 def done(result, error):
                     if error or not result:
                         _log(f"⚠️ Respaldo fallido antes de importar: {error}")
-                        self._info("⚠️ Respaldo fallido", f"No se pudo crear el respaldo.\n{error or ''}".strip(),
-                                   on_close=lambda *_: self._post_action_cleanup())
+                        self._info("⚠️ Respaldo fallido",
+                                   f"No se pudo crear el respaldo.\n{error or ''}".strip(),
+                                   kind="error")
                     else:
                         _log("✅ Respaldo creado correctamente (pre-import).")
                         self._info("✅ Respaldo creado", f"Archivo: {path}",
-                                   on_close=lambda *_: self._post_action_cleanup())
+                                   kind="success")
                     self._ensure_invoker_page()
                     try:
                         self.opener_sql.open()
                     except Exception as e:
                         _log(f"❌ Error abriendo diálogo de importación luego de backup: {e}")
-                        mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de importación", str(e),
-                                        on_close=lambda *_: self._post_action_cleanup())
+                        self._info("❌ No se pudo abrir el diálogo de importación", str(e), kind="error")
 
                 self._run_bg(work, after=done)
 
@@ -487,8 +494,7 @@ class SettingsDBContainer(ft.Container):
                 self._tmp_saver.open_save()
             except Exception as e:
                 _log(f"❌ Error al abrir diálogo de guardado (pre-import): {e}")
-                mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de guardado", str(e),
-                                on_close=lambda *_: self._post_action_cleanup())
+                self._info("❌ No se pudo abrir el diálogo de guardado", str(e), kind="error")
 
         dlg.actions = [
             ft.TextButton("Cancelar", on_click=_cancel),
@@ -528,6 +534,7 @@ class SettingsDBContainer(ft.Container):
 
             def _after_backup_save(path: str):
                 _log(f"Drop DB: ruta guardado pre-drop -> {path}")
+
                 def work():
                     return self._db_export_sql_internal(path)
 
@@ -536,13 +543,12 @@ class SettingsDBContainer(ft.Container):
                         _log(f"⚠️ Respaldo fallido antes de borrar: {error}")
                         self._info("⚠️ Respaldo fallido",
                                    f"No se pudo crear el respaldo.\n{error or ''}".strip(),
-                                   on_close=lambda *_: self._post_action_cleanup())
-                        # Confirmar si desea continuar
+                                   kind="error")
                         self._confirm_continuar_borrado()
                     else:
                         _log("✅ Respaldo creado correctamente (pre-drop).")
                         self._info("✅ Respaldo creado", f"Archivo: {path}",
-                                   on_close=lambda *_: self._post_action_cleanup())
+                                   kind="success")
                         self._do_drop_db()
 
                 self._run_bg(work, after=done)
@@ -559,8 +565,7 @@ class SettingsDBContainer(ft.Container):
                 self._tmp_saver.open_save()
             except Exception as e:
                 _log(f"❌ Error al abrir diálogo de guardado (pre-drop): {e}")
-                mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de guardado", str(e),
-                                on_close=lambda *_: self._post_action_cleanup())
+                self._info("❌ No se pudo abrir el diálogo de guardado", str(e), kind="error")
 
         dlg.actions = [
             ft.TextButton("Cancelar", on_click=_cancel),
@@ -578,8 +583,12 @@ class SettingsDBContainer(ft.Container):
             actions_alignment=ft.MainAxisAlignment.END,
         )
         dlg.actions = [
-            ft.TextButton("Cancelar", on_click=lambda e: ( _log("Drop DB: cancelar posterior a fallo de respaldo."), self._close_dialog(dlg) )),
-            ft.ElevatedButton("Borrar de todos modos", on_click=lambda e: ( _log("Drop DB: continuar sin respaldo."), self._close_dialog(dlg), self._do_drop_db())),
+            ft.TextButton("Cancelar",
+                          on_click=lambda e: (_log("Drop DB: cancelar posterior a fallo de respaldo."),
+                                              self._close_dialog(dlg))),
+            ft.ElevatedButton("Borrar de todos modos",
+                              on_click=lambda e: (_log("Drop DB: continuar sin respaldo."),
+                                                  self._close_dialog(dlg), self._do_drop_db())),
         ]
         self._open_dialog(dlg)
 
@@ -596,7 +605,6 @@ class SettingsDBContainer(ft.Container):
 
     # -------------------------- Operaciones reales --------------------------
     def _db_export_sql_internal(self, path: str) -> bool:
-        """Intenta exportar con firma nueva; si no, cae a firma antigua."""
         path = self._ensure_ext((path or "").strip(), "sql")
         _log(f"Export interno a: {path}")
         try:
@@ -609,15 +617,6 @@ class SettingsDBContainer(ft.Container):
             _log(f"Export DB (clásica) → {bool(res)}")
             return bool(res)
 
-    def _info(self, titulo: str, mensaje: str, *, on_close: Optional[Callable] = None):
-        """Muestra modal informativo y ejecuta cleanup al cerrarlo (cuando es posible)."""
-        try:
-            mostrar_mensaje(self.page, titulo, mensaje, on_close=on_close or (lambda *_: self._post_action_cleanup()))
-            _log(f"mostrar_mensaje -> '{titulo}' (con on_close)")
-        except Exception as e:
-            _log(f"⚠️ mostrar_mensaje falló ({e}); intentando ModalAlert o SnackBar.")
-            # Fallback ya está definido arriba en import-time
-
     def _do_export_db_sql(self, path: str):
         _log(f"Solicitado export DB a ruta: {path}")
         def work():
@@ -625,19 +624,19 @@ class SettingsDBContainer(ft.Container):
 
         def done(result, error):
             self._close_any_dialog()
-            # habilitar antes de mostrar el modal (por si el modal no tiene on_close)
-            self._post_action_cleanup()
             if error:
                 _log(f"❌ Export DB error: {error}")
-                self._info("❌ Error al exportar", str(error))
+                self._info("❌ Error al exportar", str(error), kind="error")
                 return
             if result:
                 final = self._ensure_ext(path, 'sql')
                 _log(f"✅ Export DB OK → {final}")
-                self._info("✅ Exportación completa", f"La base fue exportada correctamente.\nRuta: {final}")
+                self._info("✅ Exportación completa",
+                           f"La base fue exportada correctamente.\nRuta: {final}",
+                           kind="success")
             else:
                 _log("⚠️ Export DB devolvió False.")
-                self._info("⚠️ Error", "No se pudo exportar la base.")
+                self._info("⚠️ Error", "No se pudo exportar la base.", kind="error")
         self._run_bg(work, after=done)
 
     def _do_import_db_sql_overwrite(self, path: str):
@@ -646,45 +645,52 @@ class SettingsDBContainer(ft.Container):
         if not path or not os.path.exists(path) or not self._check_allowed(path, ["sql"]):
             self._close_any_dialog()
             _log("⚠️ Archivo inválido para importación.")
-            self._post_action_cleanup()
-            self._info("⚠️ Archivo inválido", "Selecciona un archivo .sql válido.")
+            self._info("⚠️ Archivo inválido", "Selecciona un archivo .sql válido.", kind="error")
             return
 
         def work():
             try:
-                _log("Intentando importar con firma avanzada (mode='overwrite', recreate_schema=False).")
-                return bool(self.db.importar_base_datos(path, mode="overwrite", recreate_schema=False, page=self.page))  # type: ignore
+                _log("Intentando importar (mode='overwrite', recreate_schema=False).")
+                return bool(self.db.importar_base_datos(path, mode="overwrite", recreate_schema=False))  # type: ignore
             except TypeError:
                 _log("Firma avanzada no soportada; usando importar_base_datos(path).")
-                return bool(self.db.importar_base_datos(path, page=self.page))
+                return bool(self.db.importar_base_datos(path))
 
         def done(result, error):
             self._close_any_dialog()
-            # re-habilitar controles ANTES del modal
-            self._post_action_cleanup()
             if error:
                 _log(f"❌ Import DB error: {error}")
-                self._info("❌ Error al importar", f"Ocurrió un error:\n{error}")
+                self._info("❌ Error al importar", f"Ocurrió un error:\n{error}", kind="error")
                 return
             if result:
+                # Por si el .sql no trae todo en orden, corre bootstrap
+                try:
+                    bootstrap_after_drop(db=self.db, logger=_log)
+                    _log("Bootstrap post-import ejecutado.")
+                except Exception as e:
+                    _log(f"⚠️ Bootstrap post-import falló: {e}")
                 try:
                     self.db.connect()
                     _log("Conexión restablecida tras importación.")
                 except Exception as e:
                     _log(f"⚠️ db.connect tras import falló: {e}")
+
                 self._info("✅ Importación completa",
-                           f"Base '{self.db.database}' importada correctamente.\nArchivo: {path}")
+                           f"Base '{self.db.database}' importada correctamente.\nArchivo: {path}",
+                           kind="success")
                 self._publish_refresh()
             else:
                 _log("⚠️ Import DB devolvió False.")
-                self._info("⚠️ Error", f"No se pudo importar la base '{self.db.database}'.")
+                self._info("⚠️ Error", f"No se pudo importar la base '{self.db.database}'.", kind="error")
         self._run_bg(work, after=done)
 
     def _do_drop_db(self):
         _log("Ejecutando drop DB...")
         def work():
             try:
-                res = bool(self.db.dropear_base_datos(bootstrap_cb=None))  # type: ignore
+                res = bool(self.db.dropear_base_datos(
+                    bootstrap_cb=lambda: bootstrap_after_drop(db=self.db, logger=_log)
+                ))  # type: ignore
                 _log(f"dropear_base_datos → {res}")
                 return res
             except AttributeError:
@@ -696,18 +702,18 @@ class SettingsDBContainer(ft.Container):
 
         def done(result, error):
             self._close_any_dialog()
-            # re-habilitar controles ANTES del modal
-            self._post_action_cleanup()
             if error or not result:
                 _log(f"❌ Drop DB error/result={result}: {error}")
-                self._info("❌ Error", f"No se pudo dropear la base.\n{error or ''}".strip())
+                self._info("❌ Error", f"No se pudo dropear la base.\n{error or ''}".strip(), kind="error")
                 return
             try:
                 self.db.connect()
                 _log("Conexión restablecida tras drop DB.")
             except Exception as e:
                 _log(f"⚠️ db.connect tras drop falló: {e}")
-            self._info("🗑️ Base eliminada", "La base fue eliminada y la conexión restablecida.")
+            self._info("🗑️ Base eliminada",
+                       "La base fue eliminada, reconstruida (bootstrap) y la conexión restablecida.",
+                       kind="success")
             self._publish_refresh()
         self._run_bg(work, after=done)
 

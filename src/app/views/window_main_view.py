@@ -13,8 +13,8 @@ from app.views.containers.home.trabajadores.trabajadores_container import Trabaj
 from app.views.containers.home.inventario.inventario_container import InventarioContainer
 from app.views.containers.home.usuarios.users_settings_container import UsersSettingsContainer
 from app.views.containers.home.agenda.agenda_container import AgendaContainer
+from app.views.containers.home.servicios.servicios import ServiciosContainer
 from app.views.containers.settings.settings import SettingsDBContainer  
-
 
 @class_singleton
 class WindowMain:
@@ -238,6 +238,13 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
+            # ✅ NUEVA RUTA: Servicios
+            if path in ("/servicios", "/services"):
+                self._current_module = "servicios"
+                self._set_content([ServiciosContainer()], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
+
             if path in ("/users-settings", "/usuarios-ajustes", "/users"):
                 self._current_module = "users-settings"
                 self._set_content([UsersSettingsContainer()], use_navbar=True)
@@ -250,16 +257,14 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            # ✅ NUEVA RUTA: Configuración / Settings DB
+            # ✅ Configuración / Settings DB
             if path in ("/configuracion", "/settings", "/settings-db"):
-                # Usa la clave que tengas definida en tu ThemeController para la paleta del área de settings.
-                # Si no hay una paleta específica, 'settings' o 'configuracion' caerán en el tema global sin romper nada.
-                self._current_module = "settings"  # o "configuracion" si así la nombraste en tu paleta
+                self._current_module = "settings"
                 self._set_content([SettingsDBContainer(self._page)], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
 
-            # Ruta no reconocida → redirigir a /home para no desincronizar UI/URL
+            # Ruta no reconocida → redirigir a /home
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
             if self._page:
                 self._page.go("/home")

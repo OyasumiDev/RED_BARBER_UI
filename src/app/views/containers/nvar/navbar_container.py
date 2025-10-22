@@ -141,14 +141,18 @@ class NavBarContainer(ft.Container):
             rol = (sess.get("rol") or "").strip().lower()
             username = (sess.get("username") or "").strip().lower()
 
+        # ¿Es root?
+        is_root = (rol == "root" or username == "root")
+
         # Iconos según rol (perfil)
         icon_user_fallback = "assets/buttons/user-manager-area-button.png"  # fallback
         icon_user = "assets/logos/user.png"
         icon_root = "assets/logos/root.png"
 
-        user_icon = icon_root if (rol == "root" or username == "root") else icon_user
+        user_icon = icon_root if is_root else icon_user
         user_icon = user_icon or icon_user_fallback  # fallback final
 
+        # Ítems base visibles para todos
         items: List[Dict[str, Any]] = [
             {
                 "icon_src": user_icon,
@@ -179,27 +183,41 @@ class NavBarContainer(ft.Container):
                 "key": "inventario",
             },
             {
+                "icon_src": "assets/buttons/servicios-area-button.png",
+                "label": "Servicios",
+                "tooltip": "Catálogo de servicios",
+                "route": "/servicios",
+                "key": "servicios",
+            },
+            {
                 "icon_src": "assets/buttons/agenda-area-button.png",
                 "label": "Agenda",
                 "tooltip": "Agenda de citas y horarios",
                 "route": "/agenda",
                 "key": "agenda",
             },
-            {
-                "icon_src": "assets/buttons/user-manager-area-button.png",
-                "label": "Usuarios",
-                "tooltip": "Ajustes de usuarios",
-                "route": "/users-settings",
-                "key": "users-settings",
-            },
-            {
-                "icon_src": "assets/buttons/settings-button.png",
-                "label": "Configuración",
-                "tooltip": "Ajustes del sistema",
-                "route": "/configuracion",  # ← Settings DB
-                "key": "configuracion",
-            },
         ]
+
+        # Ítems SOLO para ROOT
+        if is_root:
+            items.extend(
+                [
+                    {
+                        "icon_src": "assets/buttons/user-manager-area-button.png",
+                        "label": "Usuarios",
+                        "tooltip": "Ajustes de usuarios",
+                        "route": "/users-settings",
+                        "key": "users-settings",
+                    },
+                    {
+                        "icon_src": "assets/buttons/settings-button.png",
+                        "label": "Configuración",
+                        "tooltip": "Ajustes del sistema (DB)",
+                        "route": "/configuracion",  # ← Settings DB
+                        "key": "configuracion",
+                    },
+                ]
+            )
 
         return items
 

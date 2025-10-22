@@ -185,6 +185,79 @@ class PaletteFactory:
                 },
             },
 
+            # -------- NUEVO: servicios --------
+            "servicios": {
+                "light": {
+                    "BG_COLOR":  "#F9FAFB",
+                    "FG_COLOR":  "#111827",
+                    "CARD_BG":   "#FFFFFF",
+                    "HEADER":    "#7A1E1E",
+                    "ACCENT":    "#D32F2F",
+                    "BTN_BG":    "#F3F4F6",
+                    "FIELD_BG":  "#F3F4F6",
+                    "ICON_COLOR": ft.colors.BLACK,
+
+                    "DIVIDER_COLOR": ft.colors.RED_300,
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.12, ft.colors.BLACK),
+                    "ROW_HOVER":     "rgba(211,47,47,0.06)",
+                    "HOVER_BG":      ft.colors.with_opacity(0.06, ft.colors.RED_600),
+
+                    # Etiquetas / chips (activo / inactivo)
+                    "CHIP_OK_BG":    "#E8F5E9",
+                    "CHIP_OK_TXT":   "#2E7D32",
+                    "CHIP_OFF_BG":   "#FFF3E0",
+                    "CHIP_OFF_TXT":  "#ED6C02",
+
+                    # Tags para tipos de servicio (visibilidad clara)
+                    "TYPE_TAG_BG":   "#FFECEE",
+                    "TYPE_TAG_TXT":  "#B71C1C",
+
+                    # Precios
+                    "PRICE_TXT":     "#1F2937",
+                    "PRICE_BG":      "#FFF8F8",
+
+                    # Cabecera de tabla
+                    "TABLE_HEADER_BG": "#FFF1F1",
+                    "TABLE_HEADER_TXT":"#7A1E1E",
+
+                    # Badges / indicadores
+                    "BADGE_BG":  ft.colors.RED_50,
+                    "BADGE_FG":  ft.colors.RED_700,
+                },
+                "dark": {
+                    "BG_COLOR":  "#0F1115",
+                    "FG_COLOR":  "#E5E7EB",
+                    "CARD_BG":   "#1C1F26",
+                    "HEADER":    "#FF8A80",
+                    "ACCENT":    "#EF5350",
+                    "BTN_BG":    ft.colors.GREY_800,
+                    "FIELD_BG":  "#101318",
+                    "ICON_COLOR": ft.colors.GREY_300,
+
+                    "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.20, ft.colors.WHITE),
+                    "ROW_HOVER":     "rgba(255,82,82,0.08)",
+                    "HOVER_BG":      ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
+
+                    "CHIP_OK_BG":    "rgba(102,187,106,0.15)",
+                    "CHIP_OK_TXT":   "#A5D6A7",
+                    "CHIP_OFF_BG":   "rgba(255,160,0,0.15)",
+                    "CHIP_OFF_TXT":  "#FFCC80",
+
+                    "TYPE_TAG_BG":   "rgba(255,138,128,0.16)",
+                    "TYPE_TAG_TXT":  "#FFCDD2",
+
+                    "PRICE_TXT":     "#E5E7EB",
+                    "PRICE_BG":      "rgba(255,255,255,0.04)",
+
+                    "TABLE_HEADER_BG": "#1A1214",
+                    "TABLE_HEADER_TXT":"#FFCDD2",
+
+                    "BADGE_BG":  ft.colors.with_opacity(0.14, ft.colors.RED_ACCENT_100),
+                    "BADGE_FG":  ft.colors.RED_ACCENT_200,
+                },
+            },
+
             # -------- NUEVO: db-settings --------
             "db-settings": {
                 "light": {
@@ -300,6 +373,13 @@ class PaletteFactory:
                 light=self._areas["db-settings"]["light"],
                 dark=self._areas["db-settings"]["dark"],
             )
+
+        # Alias para servicios
+        self.register_area_palette(
+            "services",
+            light=self._areas["servicios"]["light"],
+            dark=self._areas["servicios"]["dark"],
+        )
 
     # ---------- API ----------
     @staticmethod

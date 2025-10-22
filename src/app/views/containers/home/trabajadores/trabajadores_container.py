@@ -460,7 +460,7 @@ class TrabajadoresContainer(ft.Container):
             options=[
                 ft.dropdown.Option(E_TRAB_TIPO.OCASIONAL.value, "ocasional"),
                 ft.dropdown.Option(E_TRAB_TIPO.PLANTA.value, "planta"),
-                ft.dropdown.Option(E_TRAB_TIPO.DUENO.value, "dueno"),
+                ft.dropdown.Option(E_TRAB_TIPO.DUENO.value, "dueño"),
             ],
             dense=True,
             width=140,
