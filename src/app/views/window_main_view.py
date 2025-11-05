@@ -15,6 +15,7 @@ from app.views.containers.home.usuarios.users_settings_container import UsersSet
 from app.views.containers.home.agenda.agenda_container import AgendaContainer
 from app.views.containers.home.servicios.servicios import ServiciosContainer
 from app.views.containers.settings.settings import SettingsDBContainer  
+from app.views.containers.home.cortes.cortes_container import CortesContainer
 
 @class_singleton
 class WindowMain:
@@ -263,6 +264,13 @@ class WindowMain:
                 self._set_content([SettingsDBContainer(self._page)], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
+            
+            if path in ("/cortes", "/pagos", "/cortes-pagos"):
+                self._current_module = "cortes"
+                self._set_content([CortesContainer()], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
+
 
             # Ruta no reconocida → redirigir a /home
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")

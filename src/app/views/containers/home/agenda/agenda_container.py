@@ -116,6 +116,9 @@ class AgendaContainer(ft.Container):
         self.trab_model = TrabajadoresModel()
         self.serv_model = ServiciosModel()  # catálogo (sin pivot con trabajador)
 
+        # Cache simple de trabajadores (id -> nombre) para etiquetas
+        self._trab_cache: Dict[int, str] = {}
+
         # Rango y filtros
         self.base_day: date = date.today()   # semana actual
         self.days_span: int = 7
@@ -425,6 +428,13 @@ class AgendaContainer(ft.Container):
             r[SERV_TX] = r.get(E_AGENDA.TITULO.value, "")  # nombre textual guardado
             # Preseleccionar FK de servicio si viene de BD
             r[SERV_ID] = r.get("servicio_id")
+            # Etiqueta del trabajador
+            try:
+                tid_val = r.get(E_AGENDA.TRABAJADOR_ID.value)
+                tid_int = int(tid_val) if tid_val is not None else None
+            except Exception:
+                tid_int = None
+            r["trabajador_nombre"] = self._get_trab_name(tid_int) if tid_int is not None else ""
 
         editing_set = self._editing_rows.get(DIA, set())
         if editing_set:
@@ -663,28 +673,66 @@ class AgendaContainer(ft.Container):
         self._edit_controls[k][key] = tf
         return tf
 
-    def _fmt_trab_cell(self, value: Any, row: Dict[str, Any], dia_iso: str, *, key: str) -> ft.Control:
-        en_edicion = bool(row.get("_is_new")) or row.get("_editing", False)
-        if not en_edicion:
-            label = row.get("trabajador_nombre") or str(value or "")
-            return ft.Text(label, size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
-        opts = []
+    # --------- Trabajadores: cache/lookup y celda ----------
+    def _load_trab_options(self) -> List[ft.dropdown.Option]:
+        """Carga trabajadores desde el modelo, refresca cache y devuelve opciones para Dropdown."""
+        opciones: List[ft.dropdown.Option] = []
+        cache: Dict[int, str] = {}
         try:
             trs = self.trab_model.listar(estado=None) or []
         except Exception:
             trs = []
         for r in trs:
-            tid = (
-                r.get("id")
-                or r.get("ID")
-                or r.get("trabajador_id")
-                or r.get("id_trabajador")
-            )
-            nom = r.get("nombre") or r.get("NOMBRE") or r.get("name") or f"Trabajador {tid}"
-            if tid is not None:
-                opts.append(ft.dropdown.Option(str(tid), nom))
+            tid = (r.get("id") or r.get("ID") or r.get("trabajador_id") or r.get("id_trabajador"))
+            nom = r.get("nombre") or r.get("NOMBRE") or r.get("name") or (f"Trabajador {tid}" if tid is not None else "")
+            if tid is None:
+                continue
+            try:
+                tid_int = int(tid)
+            except Exception:
+                continue
+            cache[tid_int] = nom
+            opciones.append(ft.dropdown.Option(str(tid_int), nom))
+        self._trab_cache = cache
+        return opciones
+
+    def _ensure_trab_cache(self):
+        if not self._trab_cache:
+            self._load_trab_options()
+
+    def _get_trab_name(self, tid: Optional[int]) -> str:
+        if tid is None:
+            return ""
+        self._ensure_trab_cache()
+        try:
+            return self._trab_cache.get(int(tid), str(tid))
+        except Exception:
+            return str(tid)
+
+    def _fmt_trab_cell(self, value: Any, row: Dict[str, Any], dia_iso: str, *, key: str) -> ft.Control:
+        en_edicion = bool(row.get("_is_new")) or row.get("_editing", False)
+        if not en_edicion:
+            label = row.get("trabajador_nombre")
+            if not label:
+                try:
+                    label = self._get_trab_name(int(value)) if value is not None else ""
+                except Exception:
+                    label = str(value or "")
+            return ft.Text(label, size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
+
+        # En edición: dropdown con cache actualizada
+        opts = self._load_trab_options()
         dd = ft.Dropdown(value=str(value) if value is not None else None, options=opts, width=140, dense=True)
         dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=11)
+
+        def _on_change(_):
+            try:
+                sel = next((o for o in dd.options if o.key == dd.value), None)
+                row["trabajador_nombre"] = sel.text if sel else ""
+            except Exception:
+                row["trabajador_nombre"] = ""
+        dd.on_change = _on_change
+
         k = self._ensure_edit_map(dia_iso, row.get(E_AGENDA.ID.value))
         self._edit_controls[k][key] = dd
         return dd
@@ -760,6 +808,71 @@ class AgendaContainer(ft.Container):
         dd.on_change = _on_estado_change
         return dd
 
+    # ---------- Chequeo de solapes ----------
+    @staticmethod
+    def _overlap(a_ini: datetime, a_fin: datetime, b_ini: datetime, b_fin: datetime) -> bool:
+        """Hay solape si el inicio de uno es antes del fin del otro y viceversa."""
+        return (a_ini < b_fin) and (b_ini < a_fin)
+
+    def _find_conflict_for_trabajador(
+        self,
+        trabajador_id: int,
+        inicio_dt: datetime,
+        fin_dt: datetime,
+        *,
+        exclude_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Devuelve la CITA (dict) que entra en conflicto para el trabajador dado,
+        considerando SOLO citas en estado PROGRAMADA. Si no hay conflicto, None.
+        """
+        try:
+            rows = self.model.listar_por_dia(dia=inicio_dt.date(), estado=None) or []
+        except Exception:
+            rows = []
+
+        for r in rows:
+            # excluir la misma cita en edición
+            rid = r.get(E_AGENDA.ID.value)
+            try:
+                rid_int = int(rid) if rid is not None else None
+            except Exception:
+                rid_int = None
+            if exclude_id is not None and rid_int == exclude_id:
+                continue
+
+            # trabajador debe coincidir
+            tid = r.get(E_AGENDA.TRABAJADOR_ID.value)
+            try:
+                tid_int = int(tid) if tid is not None else None
+            except Exception:
+                tid_int = None
+            if tid_int != trabajador_id:
+                continue
+
+            # solo bloquea si está PROGRAMADA
+            estado = (r.get(E_AGENDA.ESTADO.value) or "").strip().lower()
+            if estado != E_AGENDA_ESTADO.PROGRAMADA.value.lower():
+                continue
+
+            # parseo horarios
+            r_ini = r.get(E_AGENDA.INICIO.value)
+            r_fin = r.get(E_AGENDA.FIN.value)
+            try:
+                if isinstance(r_ini, str):
+                    r_ini = datetime.fromisoformat(r_ini)
+                if isinstance(r_fin, str):
+                    r_fin = datetime.fromisoformat(r_fin)
+            except Exception:
+                continue
+            if not isinstance(r_ini, datetime) or not isinstance(r_fin, datetime):
+                continue
+
+            if self._overlap(inicio_dt, fin_dt, r_ini, r_fin):
+                return r
+
+        return None
+
     # ---------------------------------------------------------------
     # Actions / CRUD (iconos compactos)
     # ---------------------------------------------------------------
@@ -791,7 +904,7 @@ class AgendaContainer(ft.Container):
             )
         acciones: List[ft.Control] = []
         estado_actual = (row.get(E_AGENDA.ESTADO.value) or "").strip().lower()
-        if estado_actual == E_AGENDA_ESTADO.PROGRAMADA.value:
+        if estado_actual == E_AGENDA_ESTADO.PROGRAMADA.value.lower():
             acciones.append(
                 _ico(
                     ft.icons.CHECK_CIRCLE,
@@ -923,6 +1036,34 @@ class AgendaContainer(ft.Container):
                 fin_dt = datetime.combine(d, _parse_hhmm(h_fin_visible))
             else:
                 fin_dt = inicio_dt + timedelta(minutes=DEFAULT_DURATION_MIN)
+
+        # ---- BLOQUEO POR SOLAPE DE TRABAJADOR (solo contra PROGRAMADAS) ----
+        if trabajador_id is not None:
+            exclude = None
+            try:
+                if row.get(E_AGENDA.ID.value) not in (None, "", 0):
+                    exclude = int(row.get(E_AGENDA.ID.value))
+            except Exception:
+                exclude = None
+
+            conflicto = self._find_conflict_for_trabajador(
+                trabajador_id=trabajador_id,
+                inicio_dt=inicio_dt,
+                fin_dt=fin_dt,
+                exclude_id=exclude,
+            )
+            if conflicto:
+                tname = self._get_trab_name(trabajador_id)
+                try:
+                    c_ini = conflicto.get(E_AGENDA.INICIO.value)
+                    c_fin = conflicto.get(E_AGENDA.FIN.value)
+                    if isinstance(c_ini, str): c_ini = datetime.fromisoformat(c_ini)
+                    if isinstance(c_fin, str): c_fin = datetime.fromisoformat(c_fin)
+                    rango_txt = f"{c_ini.strftime('%H:%M')}–{c_fin.strftime('%H:%M')}" if isinstance(c_ini, datetime) and isinstance(c_fin, datetime) else "en ese horario"
+                except Exception:
+                    rango_txt = "en ese horario"
+                self._snack_error(f"❌ {tname or 'El trabajador'} ya tiene una cita PROGRAMADA {rango_txt}. Cambia la hora o el trabajador.")
+                return
 
         uid = None
         try:
@@ -1138,6 +1279,13 @@ class AgendaContainer(ft.Container):
             r["hora_fin"] = _hfmt(fin)
             r["servicio_txt"] = r.get(E_AGENDA.TITULO.value, "")
             r["servicio_id"] = r.get("servicio_id")
+            # Etiqueta del trabajador
+            try:
+                tid_val = r.get(E_AGENDA.TRABAJADOR_ID.value)
+                tid_int = int(tid_val) if tid_val is not None else None
+            except Exception:
+                tid_int = None
+            r["trabajador_nombre"] = self._get_trab_name(tid_int) if tid_int is not None else ""
 
         editing_set = self._editing_rows.get(dia_iso, set())
         if editing_set:

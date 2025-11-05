@@ -13,6 +13,13 @@ from app.models.trabajadores_model import TrabajadoresModel
 from app.models.inventario_model import InventarioModel
 from app.models.agenda_model import AgendaModel
 from app.models.servicios_model import ServiciosModel
+from app.models.promos_model import PromosModel  # ← PROMOS
+
+# Cortes es opcional: import flexible (no romper si aún no está)
+try:
+    from app.models.cortes_model import CortesModel   # ← CORTES (opcional)
+except Exception:
+    CortesModel = None  # type: ignore
 
 # ENUMS (para preflight y logs con nombres reales de tablas)
 from app.core.enums.e_usuarios import E_USUARIOS
@@ -20,6 +27,15 @@ from app.core.enums.e_trabajadores import E_TRABAJADORES
 from app.core.enums.e_inventario import E_INVENTARIO, E_INV_MOVS, E_INV_ALERTAS
 from app.core.enums.e_agenda import E_AGENDA
 from app.core.enums.e_servicios import E_SERV
+from app.core.enums.e_promos import E_PROMO  # ← PROMOS
+
+# Enum de Cortes opcional
+try:
+    from app.core.enums.e_cortes import E_CORTES  # ← CORTES (opcional)
+except Exception:
+    class _ECORTES_FALLBACK:
+        TABLE = type("T", (), {"value": "cortes"})
+    E_CORTES = _ECORTES_FALLBACK()  # type: ignore
 
 
 # ------------------------ Utils de log ------------------------
@@ -57,8 +73,17 @@ def _preflight_verify_tables(db: DatabaseMysql, logger: Optional[Callable[[str],
         ("inventario_movimientos", E_INV_MOVS.TABLE.value),
         ("inventario_alertas", E_INV_ALERTAS.TABLE.value),
         ("servicios", E_SERV.TABLE.value),
+        ("promos", E_PROMO.TABLE.value),          # ← NUEVO
         ("agenda_citas", E_AGENDA.TABLE.value),
     ]
+
+    # Añadir cortes si el enum está disponible (o fallback 'cortes')
+    try:
+        cortes_tbl = getattr(E_CORTES, "TABLE", None)
+        cortes_tbl_name = getattr(cortes_tbl, "value", "cortes")
+        checks.append(("cortes", cortes_tbl_name))
+    except Exception:
+        checks.append(("cortes", "cortes"))
 
     for label, tbl in checks:
         if _table_exists(db, tbl):
@@ -121,17 +146,22 @@ def bootstrap_db(
         # 1) Usuarios (independiente)
         _safe_create("tabla usuarios_app", UsuariosModel, logger)
 
-        # 2) Trabajadores y Servicios (referenciadas por 'agenda_citas')
+        # 2) Trabajadores y Servicios (referenciadas por 'agenda_citas' y 'promos' y 'cortes')
         _safe_create("tabla trabajadores", TrabajadoresModel, logger)
         servicios = _safe_create("tabla servicios", ServiciosModel, logger)
 
-        # 3) Agenda (puede crear FKs a tablas anteriores)
+        # 3) Promos (FK a servicios y auditoría a trabajadores)
+        _safe_create("tabla promos", PromosModel, logger)
+
+        # 4) Agenda (FK a trabajadores/servicios)
         _safe_create("tabla agenda_citas", AgendaModel, logger)
 
-        # 4) Inventario + dependientes
+        # 5) Cortes (Pagos) — si el modelo está presente
+        if CortesModel:
+            _safe_create("tabla cortes", CortesModel, logger)
+
+        # 6) Inventario + dependientes
         _safe_create("tabla inventario", InventarioModel, logger)
-        # Si otros modelos crean inventario_movimientos/alertas, se cubrirán en su init
-        # (Si no, podrías añadir aquí modelos auxiliares específicos)
 
         # Seeds opcionales
         if run_seeds and hasattr(servicios, "seed_predeterminados"):

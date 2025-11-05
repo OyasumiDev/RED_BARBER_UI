@@ -37,6 +37,15 @@ Edición en línea (sin modal):
 - Confirmación de borrado con diálogo ligero.
 
 Python 3.12.7 — Español en etiquetas y logs — sin dependencias nuevas.
+
+Mejoras incluidas:
+- Suscripción a cambios de tema vía AppState.on_theme_change() (montaje/desmontaje).
+- Re-cálculo de paleta del área "servicios" sin parámetros extra.
+- Reaplicación inmediata de colores a TextFields, Divider, fondo y cabecera de tabla.
+- **Tabla solo centrada horizontalmente** (no vertical).
+- **Contraste mejorado en claro** para inputs y dropdown.
+- **“Otro (escribir)”** muestra y enfoca casilla adyacente.
+- **Tipos** se muestran en español correcto (con acentos) en UI sin cambiar valores internos.
 """
 
 from decimal import Decimal, InvalidOperation
@@ -94,6 +103,21 @@ def _to_decimal(s: str) -> Decimal:
         return Decimal("0")
     return Decimal(s)
 
+# Etiquetas de tipo para la UI (valores internos -> etiqueta en español)
+TIPO_UI_LABELS: Dict[str, str] = {
+    "corte_adulto": "corte adulto",
+    "corte_nino": "corte niño",
+    "barba_trad": "barba trad",
+    "barba_expres": "barba exprés",
+    "facial": "facial",
+    "ceja": "ceja",
+    "linea": "línea",
+    "disenio": "diseño",
+}
+def _label_tipo_ui(value: str) -> str:
+    v = (value or "").strip()
+    return TIPO_UI_LABELS.get(v, v.replace("_", " ").lower() or "—")
+
 
 class ServiciosContainer(ft.UserControl):
     """
@@ -134,6 +158,7 @@ class ServiciosContainer(ft.UserControl):
             w_buscar=260,
             w_id=140,
             table_max_w=900,
+            tipo_col_w=360,
         )
 
         # Permisos
@@ -163,13 +188,14 @@ class ServiciosContainer(ft.UserControl):
 
         # UI refs
         self._table: Optional[ft.DataTable] = None
-        # Contenedor centrado para la tabla
+        # Solo centrado horizontal (no vertical)
         self._table_container = ft.Container(
-            expand=True,
+            expand=False,
+            alignment=ft.alignment.top_center,
             content=ft.Row([], alignment=ft.MainAxisAlignment.CENTER),
         )
         self._header_row: Optional[ft.Row] = None
-        self._dialog: Optional[ft.AlertDialog] = None  # solo para confirmar borrado
+        self._dialog: Optional[ft.AlertDialog] = None  # confirmación borrado
 
         # Toolbar controls (ID + Nombre)
         self._id_tf = ft.TextField(
@@ -220,12 +246,29 @@ class ServiciosContainer(ft.UserControl):
         self.layout_ctrl = LayoutController() if LayoutController else None
         self._layout_listener = None
 
+        # Root/divider refs para recolorear sin reconstruir
+        self._root_container: Optional[ft.Container] = None
+        self._divider: Optional[ft.Divider] = None
+
+        # Tema: callback suscrito (para off_theme_change)
+        self._theme_cb: Optional[Callable] = None
+
     # ---------------- Ciclo de vida ----------------
     def did_mount(self):
         self._resolver_rol_usuario()
         print(f"[Servicios][ROL] rol_resuelto={self._rol} is_root={self._is_root}")
         if self._btn_agregar:
             self._btn_agregar.disabled = not self._is_root
+
+        # Suscripción a cambios de tema (dispara de inmediato)
+        if not self._theme_cb:
+            def _cb_theme(_is_dark: bool = None):
+                self._on_theme_changed()
+            self._theme_cb = _cb_theme
+            try:
+                self.app_state.on_theme_change(self._theme_cb)
+            except Exception:
+                self._theme_cb = None  # evitar off posterior
 
         self._subscribe_pubsub()
         self._cargar_datos()
@@ -258,24 +301,37 @@ class ServiciosContainer(ft.UserControl):
                 pass
             self._pubsub_unsub = None
 
+        # Quitar listener de tema
+        if self._theme_cb:
+            try:
+                self.app_state.off_theme_change(self._theme_cb)
+            except Exception:
+                pass
+            self._theme_cb = None
+
     # ---------------- Build ----------------
     def build(self) -> ft.Control:
         header = self._build_header()
         self._build_table()
-        return ft.Container(
+        self._divider = ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT) if self.colors else None)
+
+        root = ft.Container(
             expand=True,
             bgcolor=self.colors.get("BG_COLOR") if self.colors else None,
             padding=self.UI["pad_page"],
             content=ft.Column(
                 expand=True,
                 spacing=8,
+                alignment=ft.MainAxisAlignment.START,  # asegura pegado arriba
                 controls=[
                     header,
-                    ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT) if self.colors else None),
+                    self._divider,
                     self._table_container,
                 ],
             ),
         )
+        self._root_container = root
+        return root
 
     # =========================================================
     # Header / Tabla
@@ -335,12 +391,12 @@ class ServiciosContainer(ft.UserControl):
             columns=cols,
             rows=[],
             heading_row_color=self.colors.get("TABLE_HEADER_BG", self.colors.get("CARD_BG", ft.colors.SURFACE_VARIANT)) if self.colors else None,
-            data_row_min_height=38,
+            data_row_min_height=45,
             divider_thickness=1,
             heading_text_style=ft.TextStyle(size=12, weight=ft.FontWeight.W_600, color=self.colors.get("TABLE_HEADER_TXT", None)),
             column_spacing=24,
         )
-        # Centrar tabla: colocarla dentro de un Row centrado
+        # Centrar tabla sólo en horizontal
         self._table_container.content = ft.Row(
             controls=[ft.Container(self._table, width=self.UI["table_max_w"])],
             alignment=ft.MainAxisAlignment.CENTER,
@@ -355,7 +411,7 @@ class ServiciosContainer(ft.UserControl):
             bgcolor=bg,
             padding=ft.padding.symmetric(horizontal=8, vertical=4),
             border_radius=12,
-            content=ft.Text(_txt(tipo_val), size=11, color=fg),
+            content=ft.Text(_label_tipo_ui(_txt(tipo_val)), size=11, color=fg),
         )
 
     def _build_price_cell(self, precio_txt: str) -> ft.Control:
@@ -392,18 +448,27 @@ class ServiciosContainer(ft.UserControl):
         return self._edit_controls[key]
 
     def _build_tipo_dropdown(self, value: Optional[str], key: int, on_change_cb: Callable[[Any], None]) -> ft.Dropdown:
-        opts = [ft.dropdown.Option(t.value, t.value.replace("_", " ").lower()) for t in E_SERV_TIPO]
+        allowed = [t.value for t in E_SERV_TIPO]
+        # Si no hay valor o no está en la lista → arrancar en "Otro (escribir)"
+        initial = value if value in allowed else self.OPT_OTRO
+
+        opts = [ft.dropdown.Option(v, _label_tipo_ui(v)) for v in allowed]
         opts.append(ft.dropdown.Option(self.OPT_OTRO, "Otro (escribir)"))
+
         dd = ft.Dropdown(
-            value=(value if value in [t.value for t in E_SERV_TIPO] else self.OPT_OTRO) if value else None,
+            value=initial,
             options=opts,
-            width=220,
+            width=180,                          # ancho fijo del combo
             height=self.UI["tf_height"],
             dense=True,
-            text_style=ft.TextStyle(size=self.UI["tf_text_size"]),
+            text_style=ft.TextStyle(size=self.UI["tf_text_size"], color=self.colors.get("FG_COLOR")),
+            color=self.colors.get("FG_COLOR"),
+            border_color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT),
+            focused_border_color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE),
             on_change=on_change_cb,
         )
         return dd
+
 
     def _fmt_nombre_edit(self, r: Dict[str, Any], key: int) -> ft.Control:
         tf = ft.TextField(
@@ -420,25 +485,41 @@ class ServiciosContainer(ft.UserControl):
         current = _txt(r.get(self.TIPO)) or ""
         mp = self._ensure_edit_map(key)
 
-        def _on_dd_change(_e=None):
-            custom.visible = (dd.value == self.OPT_OTRO)
-            self.update()
-
-        dd = self._build_tipo_dropdown(current, key, _on_dd_change)
+        # Dropdown primero (con valor inicial ya normalizado)
+        dd = self._build_tipo_dropdown(current, key, on_change_cb=lambda _e: None)
         mp["dd_tipo"] = dd
 
-        # Campo "Otro"
-        custom_init = "" if current in [t.value for t in E_SERV_TIPO] else current
+        # Campo “Otro”: expandible y con foco cuando corresponde
+        custom_init = "" if dd.value in [t.value for t in E_SERV_TIPO] else (current or "")
         custom = ft.TextField(
             value=custom_init,
             height=self.UI["tf_height"],
             text_size=self.UI["tf_text_size"],
-            visible=(not current or current not in [t.value for t in E_SERV_TIPO]),
+            hint_text="Escribe el tipo…",
+            visible=(dd.value == self.OPT_OTRO),
+            expand=1,                 # <— se expande dentro de la celda
+            autofocus=self._is_new(r) and (dd.value == self.OPT_OTRO),
         )
         self._apply_textfield_palette(custom)
         mp["tf_tipo_custom"] = custom
 
-        return ft.Row(spacing=8, controls=[dd, custom])
+        # Al cambiar el dropdown, mostrar/ocultar y enfocar el campo
+        def _on_dd_change(_e=None):
+            custom.visible = (dd.value == self.OPT_OTRO)
+            self.update()
+            if custom.visible:
+                try:
+                    custom.focus()
+                except Exception:
+                    pass
+
+        dd.on_change = _on_dd_change  # conectamos el handler ahora que existe custom
+
+        # Contenedor con ancho fijo de columna para evitar “salirse” de la celda
+        return ft.Container(
+            width=self.UI["tipo_col_w"],
+            content=ft.Row(spacing=8, controls=[dd, custom]),
+        )
 
     def _fmt_precio_edit(self, r: Dict[str, Any], key: int) -> ft.Control:
         try:
@@ -461,7 +542,7 @@ class ServiciosContainer(ft.UserControl):
         return sw
 
     def _mark_invalid(self, ctl: ft.TextField, invalid: bool):
-        ctl.border_color = ft.colors.RED if invalid else None
+        ctl.border_color = ft.colors.RED if invalid else self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)
 
     def _validate_row_controls(self, key: int) -> Tuple[bool, Dict[str, str]]:
         mp = self._edit_controls.get(key, {})
@@ -508,7 +589,8 @@ class ServiciosContainer(ft.UserControl):
         tf_precio: ft.TextField = mp.get("tf_precio")
         sw_activo: ft.Switch = mp.get("sw_activo")
 
-        tipo = (tf_tipo_custom.value or "").strip() if (dd_tipo and dd_tipo.value == self.OPT_OTRO) else ((dd_tipo.value or "").strip() if dd_tipo else "")
+        tipo = (tf_tipo_custom.value or "").strip() if (dd_tipo and dd_tipo.value == self.OPT_OTRO) \
+            else ((dd_tipo.value or "").strip() if dd_tipo else "")
         precio = _to_decimal(tf_precio.value or "0") if tf_precio else Decimal("0")
         activo = 1 if (sw_activo.value if sw_activo else True) else 0
 
@@ -521,15 +603,17 @@ class ServiciosContainer(ft.UserControl):
 
     # ======= Filas =======
     def _row_for_service(self, s: Dict[str, Any]) -> ft.DataRow:
+        """
+        Renderiza una fila (vista o edición). La columna 'Tipo' reserva ancho fijo
+        para que el Dropdown + campo 'Otro' no se compriman y se pueda escribir.
+        """
         fg = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE) if self.colors else None
         idv = s.get(self.ID)
         key = self._row_key(s)
         is_edit = self._en_edicion(s)
+        tipo_col_w = self.UI.get("tipo_col_w", 360)  # ancho consistente para la columna 'Tipo'
 
-        # Log fila
-        self._log(f"[Servicios][ROW] acciones_render={self._is_root} id={idv if idv is not None else 'new'}")
-
-        # Vista normal
+        # ---- Modo lectura ----
         if not is_edit:
             try:
                 precio_txt = f"{Decimal(str(s.get(self.PRECIO, '0'))):.2f}"
@@ -539,11 +623,18 @@ class ServiciosContainer(ft.UserControl):
             cells: List[ft.DataCell] = [
                 ft.DataCell(ft.Text(_txt(idv) if idv is not None else "—", size=12, color=fg)),
                 ft.DataCell(ft.Text(_txt(s.get(self.NOMBRE, "—")), size=12, color=fg)),
-                ft.DataCell(self._build_tipo_tag(_txt(s.get(self.TIPO, "—")))),
+                # 'Tipo' con ancho reservado para mantener la tabla estable
+                ft.DataCell(
+                    ft.Container(
+                        self._build_tipo_tag(_txt(s.get(self.TIPO, "—"))),
+                        width=tipo_col_w,
+                    )
+                ),
                 ft.DataCell(self._build_price_cell(precio_txt)),
                 ft.DataCell(
                     ft.Icon(ft.icons.CHECK_CIRCLE, size=16, color=ft.colors.GREEN_400)
-                    if bool(s.get(self.ACTIVO, True)) else ft.Icon(ft.icons.CANCEL, size=16, color=ft.colors.RED_400)
+                    if bool(s.get(self.ACTIVO, True))
+                    else ft.Icon(ft.icons.CANCEL, size=16, color=ft.colors.RED_400)
                 ),
             ]
             if self._is_root:
@@ -567,17 +658,22 @@ class ServiciosContainer(ft.UserControl):
                 cells.append(ft.DataCell(actions))
             return ft.DataRow(cells=cells)
 
-        # Modo edición (in-row)
-        mp = self._ensure_edit_map(key)
+        # ---- Modo edición ----
         cells_edit: List[ft.DataCell] = [
             ft.DataCell(ft.Text(_txt(idv) if idv is not None else "Nuevo", size=12, color=fg)),
             ft.DataCell(self._fmt_nombre_edit(s, key)),
-            ft.DataCell(self._fmt_tipo_edit(s, key)),
+            # 'Tipo' envuelto en contenedor con ancho fijo para que el TextField de "Otro"
+            # pueda expandirse y no se corte.
+            ft.DataCell(
+                ft.Container(
+                    self._fmt_tipo_edit(s, key),
+                    width=tipo_col_w,
+                )
+            ),
             ft.DataCell(self._fmt_precio_edit(s, key)),
             ft.DataCell(self._fmt_activo_edit(s, key)),
         ]
 
-        # Acciones edición
         if self._is_root:
             actions_edit = ft.Row(
                 spacing=6,
@@ -925,7 +1021,7 @@ class ServiciosContainer(ft.UserControl):
                 res = self.model.edit(sid, **self._to_model_patch(patch))
                 used = "edit(kwargs)"
             return (res, used) if return_used else res
-        # patch(id, **patch) — fallback genérico si existiera
+        # patch(id, **patch)
         if hasattr(self.model, "patch") and callable(getattr(self.model, "patch")):
             res = self.model.patch(sid, **self._to_model_patch(patch))
             used = "patch(kwargs)"
@@ -1290,6 +1386,7 @@ class ServiciosContainer(ft.UserControl):
     def _apply_textfield_palette(self, tf: ft.TextField):
         if not self.colors:
             return
+        # Contraste claro/oscuro usando tokens del área
         tf.bgcolor = self.colors.get("FIELD_BG", self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT))
         tf.color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
         tf.label_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=self.UI["tf_label_size"])
@@ -1380,25 +1477,51 @@ class ServiciosContainer(ft.UserControl):
     # =========================================================
     def _resolve_colors(self) -> Dict[str, str]:
         """
-        Intenta obtener paleta específica del área 'servicios'.
+        Devuelve la paleta específica del área 'servicios'.
+        AppState ya resuelve dark/light internamente (no pasar 'dark' aquí).
         """
         try:
-            # get_colors(area, dark) o get_colors(area=..., dark=?)
-            if hasattr(self.app_state, "get_dark_mode") and hasattr(self.app_state, "get_colors"):
-                dark = bool(self.app_state.get_dark_mode()) if callable(self.app_state.get_dark_mode) else False
-                try:
-                    return self.app_state.get_colors("servicios", dark)  # firma (area, dark)
-                except TypeError:
-                    return self.app_state.get_colors(area="servicios", dark=dark)  # firma (area=?, dark=?)
-            elif hasattr(self.app_state, "get_colors"):
-                try:
-                    return self.app_state.get_colors("servicios")
-                except TypeError:
-                    return self.app_state.get_colors(area="servicios")
+            return self.app_state.get_colors("servicios")
         except Exception:
-            pass
-        # Fallback global
-        try:
-            return self.app_state.get_colors()
-        except Exception:
-            return {}
+            try:
+                return self.app_state.get_colors()
+            except Exception:
+                return {}
+
+    def _on_theme_changed(self):
+        """
+        Callback cuando cambia el tema:
+        - Relee paleta del área
+        - Reaplica a inputs, divider, fondo, cabecera de tabla
+        - Repinta filas
+        """
+        self.colors = self._resolve_colors()
+
+        # Recolor inputs del toolbar
+        self._apply_textfield_palette(self._id_tf)
+        self._apply_textfield_palette(self._nombre_tf)
+
+        # Fondo del root y divider
+        if self._root_container:
+            self._root_container.bgcolor = self.colors.get("BG_COLOR")
+        if self._divider:
+            self._divider.color = self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)
+
+        # Cabecera de tabla y estilos dependientes de paleta
+        self._apply_table_palette()
+
+        # Repintar filas con nuevos colores
+        self._repaint_table()
+
+    def _apply_table_palette(self):
+        """
+        Reconstruye columnas/estilos de tabla para aplicar colores actuales de paleta.
+        """
+        if not self._table:
+            self._build_table()
+            return
+
+        # Re-crear tabla para refrescar cabecera y estilos
+        self._build_table()
+        # Mantener dataset ya filtrado
+        self._repaint_table()

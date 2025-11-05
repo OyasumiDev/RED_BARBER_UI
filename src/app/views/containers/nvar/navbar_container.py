@@ -128,7 +128,7 @@ class NavBarContainer(ft.Container):
     # ======================================================
     # Construcción UI
     # ======================================================
-    def _menu_items(self) -> List[Dict[str, Any]]:
+    def _menu_items(self) -> List[Dict[str, Any]]: 
         # Detecta usuario en sesión desde client_storage (seteado en login)
         try:
             sess = self.app.get_client_value("app.user", None)
@@ -195,6 +195,14 @@ class NavBarContainer(ft.Container):
                 "tooltip": "Agenda de citas y horarios",
                 "route": "/agenda",
                 "key": "agenda",
+            },
+            # ← NUEVO: Cortes (Pagos)
+            {
+                "icon_src": "assets/buttons/cortes-area-button.png",
+                "label": "Cortes",
+                "tooltip": "Cortes y pagos",
+                "route": "/cortes",
+                "key": "cortes",
             },
         ]
 
