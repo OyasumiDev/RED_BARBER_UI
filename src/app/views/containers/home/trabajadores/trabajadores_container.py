@@ -140,12 +140,6 @@ class TrabajadoresContainer(ft.Container):
                 ),
             )
 
-        self.import_button = _btn(
-            ft.icons.FILE_DOWNLOAD_OUTLINED, "Importar", lambda e: self._on_importar()
-        )
-        self.export_button = _btn(
-            ft.icons.FILE_UPLOAD_OUTLINED, "Exportar", lambda e: self._on_exportar()
-        )
         self.add_button = _btn(ft.icons.ADD, "Agregar", lambda e: self._insertar_fila_nueva())
 
         # ---------------- Toolbar (filtros) ----------------
@@ -192,8 +186,6 @@ class TrabajadoresContainer(ft.Container):
             self.sort_name_input,
             self.sort_name_clear_btn,
         ]
-        if self.is_root:
-            toolbar_controls += [self.import_button, self.export_button]
 
         self.content = ft.Container(
             expand=True,
@@ -291,7 +283,7 @@ class TrabajadoresContainer(ft.Container):
         self._refrescar_dataset()
 
     def _recolor_ui(self):
-        for btn in [self.import_button, self.export_button, self.add_button]:
+        for btn in [self.add_button]:
             if isinstance(btn.content, ft.Container):
                 btn.content.bgcolor = self.colors.get("BTN_BG", ft.colors.SURFACE_VARIANT)
                 if isinstance(btn.content.content, ft.Row):
