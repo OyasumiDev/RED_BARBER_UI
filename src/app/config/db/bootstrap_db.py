@@ -21,6 +21,27 @@ try:
 except Exception:
     CortesModel = None  # type: ignore
 
+# ---------- NUEVO: Contabilidad (Nómina / Ganancias) ----------
+# Import tolerante: prioriza el módulo nomina_model que creamos, y acepta alternativas.
+NominaModel = None
+GananciasModel = None
+try:
+    from app.models.contabilidad_model import NominaModel as _NominaModel  # ← nuestro modelo
+    NominaModel = _NominaModel
+except Exception:
+    try:
+        # si tu proyecto tuviera estos nombres
+        from app.models.contabilidad_model import NominaModel as _NominaModel
+        NominaModel = _NominaModel
+    except Exception:
+        pass
+try:
+    # si tuvieras un modelo separado para reportes de ganancias
+    from app.models.contabilidad_model import GananciasModel as _GananciasModel
+    GananciasModel = _GananciasModel
+except Exception:
+    pass
+
 # ENUMS (para preflight y logs con nombres reales de tablas)
 from app.core.enums.e_usuarios import E_USUARIOS
 from app.core.enums.e_trabajadores import E_TRABAJADORES
@@ -31,11 +52,23 @@ from app.core.enums.e_promos import E_PROMO  # ← PROMOS
 
 # Enum de Cortes opcional
 try:
-    from app.core.enums.e_cortes import E_CORTES  # ← CORTES (opcional)
+    from app.core.enums.e_cortes import E_CORTE # ← CORTES (opcional)
 except Exception:
     class _ECORTES_FALLBACK:
         TABLE = type("T", (), {"value": "cortes"})
     E_CORTES = _ECORTES_FALLBACK()  # type: ignore
+
+# ---------- Enums de Contabilidad (opcionales con fallback antiguo) ----------
+# Si existen en tu proyecto, los usamos; si no, no estorban.
+try:
+    from app.core.enums.e_contabilidad import E_NOMINA, E_NOMINA_ITEM
+except Exception:
+    class _ENOMINA_FALLBACK:
+        TABLE = type("T", (), {"value": "nominas"})
+    class _ENOMINA_ITEM_FALLBACK:
+        TABLE = type("T", (), {"value": "nomina_items"})
+    E_NOMINA = _ENOMINA_FALLBACK()           # type: ignore
+    E_NOMINA_ITEM = _ENOMINA_ITEM_FALLBACK() # type: ignore
 
 
 # ------------------------ Utils de log ------------------------
@@ -66,25 +99,57 @@ def _table_exists(db: DatabaseMysql, table_name: str) -> bool:
 def _preflight_verify_tables(db: DatabaseMysql, logger: Optional[Callable[[str], None]] = None):
     _slog(logger, "🔍 Verificando tablas en INFORMATION_SCHEMA...")
 
-    checks = [
-        ("usuarios_app", E_USUARIOS.TABLE.value),
-        ("trabajadores", E_TRABAJADORES.TABLE.value),
-        ("inventario", E_INVENTARIO.TABLE.value),
-        ("inventario_movimientos", E_INV_MOVS.TABLE.value),
-        ("inventario_alertas", E_INV_ALERTAS.TABLE.value),
-        ("servicios", E_SERV.TABLE.value),
-        ("promos", E_PROMO.TABLE.value),          # ← NUEVO
-        ("agenda_citas", E_AGENDA.TABLE.value),
-    ]
+    checks: list[tuple[str, str]] = []
+    seen: set[str] = set()
 
-    # Añadir cortes si el enum está disponible (o fallback 'cortes')
+    def _add(label: str, tbl: str | None):
+        name = (tbl or "").strip()
+        if not name:
+            return
+        if name in seen:
+            return
+        checks.append((label, name))
+        seen.add(name)
+
+    # Base
+    _add("usuarios_app", E_USUARIOS.TABLE.value)
+    _add("trabajadores", E_TRABAJADORES.TABLE.value)
+    _add("inventario", E_INVENTARIO.TABLE.value)
+    _add("inventario_movimientos", E_INV_MOVS.TABLE.value)
+    _add("inventario_alertas", E_INV_ALERTAS.TABLE.value)
+    _add("servicios", E_SERV.TABLE.value)
+    _add("promos", E_PROMO.TABLE.value)
+    _add("agenda_citas", E_AGENDA.TABLE.value)
+
+    # Cortes
     try:
         cortes_tbl = getattr(E_CORTES, "TABLE", None)
         cortes_tbl_name = getattr(cortes_tbl, "value", "cortes")
-        checks.append(("cortes", cortes_tbl_name))
+        _add("cortes", cortes_tbl_name)
     except Exception:
-        checks.append(("cortes", "cortes"))
+        _add("cortes", "cortes")
 
+    # Contabilidad (preferimos el nombre real del modelo si existe)
+    # 1) Tabla de nómina real (nuestro NominaModel usa TABLE="nomina_pagos")
+    try:
+        if NominaModel and hasattr(NominaModel, "TABLE"):
+            _add("nomina", str(getattr(NominaModel, "TABLE")))
+        else:
+            _add("nomina", "nomina_pagos")  # fallback sensato
+    except Exception:
+        _add("nomina", "nomina_pagos")
+
+    # 2) Si tienes enums antiguos (nominas / nomina_items), también los listamos sin duplicar
+    try:
+        _add("nominas", getattr(E_NOMINA.TABLE, "value", "nominas"))
+    except Exception:
+        pass
+    try:
+        _add("nomina_items", getattr(E_NOMINA_ITEM.TABLE, "value", "nomina_items"))
+    except Exception:
+        pass
+
+    # Reporte de existencia
     for label, tbl in checks:
         if _table_exists(db, tbl):
             _slog(logger, f"✅ La tabla '{tbl}' ya existe ({label}).")
@@ -123,7 +188,6 @@ def bootstrap_db(
 ) -> Dict[str, Any]:
     """
     Bootstrap general e idempotente.
-    - Puede usarse al iniciar la app o como callback tras 'drop database'.
     - Asegura que las tablas existan en orden seguro (primero referenciadas).
     - Si 'run_seeds' es True, siembra datos mínimos (servicios).
 
@@ -142,25 +206,31 @@ def bootstrap_db(
         if with_preflight:
             _preflight_verify_tables(_db, logger)
 
-        # ⚠️ ORDEN IMPORTA: crea primero las tablas que serán referenciadas por otras
+        # ⚠️ ORDEN IMPORTA
         # 1) Usuarios (independiente)
         _safe_create("tabla usuarios_app", UsuariosModel, logger)
 
-        # 2) Trabajadores y Servicios (referenciadas por 'agenda_citas' y 'promos' y 'cortes')
+        # 2) Trabajadores y Servicios (referenciadas por 'agenda', 'promos' y 'cortes')
         _safe_create("tabla trabajadores", TrabajadoresModel, logger)
         servicios = _safe_create("tabla servicios", ServiciosModel, logger)
 
-        # 3) Promos (FK a servicios y auditoría a trabajadores)
+        # 3) Promos (FK a servicios)
         _safe_create("tabla promos", PromosModel, logger)
 
         # 4) Agenda (FK a trabajadores/servicios)
         _safe_create("tabla agenda_citas", AgendaModel, logger)
 
-        # 5) Cortes (Pagos) — si el modelo está presente
+        # 5) Cortes (si está el modelo)
         if CortesModel:
             _safe_create("tabla cortes", CortesModel, logger)
 
-        # 6) Inventario + dependientes
+        # 6) Contabilidad (Nómina crea sus propias tablas; Ganancias suele ser de reportes)
+        if NominaModel:
+            _safe_create("tabla nomina (pagos)", NominaModel, logger)
+        if GananciasModel:
+            _safe_create("módulo ganancias (reportes)", GananciasModel, logger)
+
+        # 7) Inventario y dependientes
         _safe_create("tabla inventario", InventarioModel, logger)
 
         # Seeds opcionales

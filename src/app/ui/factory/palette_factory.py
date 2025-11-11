@@ -316,6 +316,63 @@ class PaletteFactory:
                 },
             },
 
+            # -------- NUEVO: contabilidad (ganancias + nómina) --------
+            "contabilidad": {
+                "light": {
+                    "BG_COLOR":  "#F9FAFB",
+                    "FG_COLOR":  "#111827",
+                    "CARD_BG":   "#FFFFFF",
+                    "BTN_BG":    "#F3F4F6",
+                    "FIELD_BG":  "#F3F4F6",
+                    "ICON_COLOR": ft.colors.BLACK,
+
+                    "ACCENT":    "#D32F2F",
+                    "DIVIDER_COLOR": ft.colors.RED_300,
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.12, ft.colors.BLACK),
+                    "HOVER_BG":      ft.colors.with_opacity(0.06, ft.colors.RED_600),
+
+                    # Etiquetas / chips
+                    "CHIP_OK_BG":     "#E8F5E9",
+                    "CHIP_OK_TXT":    "#2E7D32",
+                    "CHIP_WARN_BG":   "#FFF8E1",
+                    "CHIP_WARN_TXT":  "#ED6C02",
+
+                    # KPI widgets
+                    "KPI_BG":   "#FFF1F1",
+                    "KPI_POS":  "#2E7D32",
+                    "KPI_NEG":  "#C62828",
+
+                    # Cabecera tabla
+                    "TABLE_HEADER_BG": "#FFF1F1",
+                    "TABLE_HEADER_TXT":"#7A1E1E",
+                },
+                "dark": {
+                    "BG_COLOR":  "#0F1115",
+                    "FG_COLOR":  "#E5E7EB",
+                    "CARD_BG":   "#1C1F26",
+                    "BTN_BG":    ft.colors.GREY_800,
+                    "FIELD_BG":  "#101318",
+                    "ICON_COLOR": ft.colors.GREY_300,
+
+                    "ACCENT":    ft.colors.RED_ACCENT_200,
+                    "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
+                    "BORDER_COLOR":  ft.colors.with_opacity(0.20, ft.colors.WHITE),
+                    "HOVER_BG":      ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
+
+                    "CHIP_OK_BG":     "rgba(102,187,106,0.15)",
+                    "CHIP_OK_TXT":    "#A5D6A7",
+                    "CHIP_WARN_BG":   "rgba(255,160,0,0.15)",
+                    "CHIP_WARN_TXT":  "#FFCC80",
+
+                    "KPI_BG":   "#1A1214",
+                    "KPI_POS":  "#66BB6A",
+                    "KPI_NEG":  "#EF9A9A",
+
+                    "TABLE_HEADER_BG": "#1A1214",
+                    "TABLE_HEADER_TXT":"#FFCDD2",
+                },
+            },
+
             # -------- NUEVO: db-settings --------
             "db-settings": {
                 "light": {
@@ -445,6 +502,14 @@ class PaletteFactory:
                 alias,
                 light=self._areas["cortes"]["light"],
                 dark=self._areas["cortes"]["dark"],
+            )
+
+        # ✅ Aliases para contabilidad (nuevo container)
+        for alias in ("ganancias", "nomina", "payroll", "contable"):
+            self.register_area_palette(
+                alias,
+                light=self._areas["contabilidad"]["light"],
+                dark=self._areas["contabilidad"]["dark"],
             )
 
     # ---------- API ----------

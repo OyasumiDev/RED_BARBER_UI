@@ -14,8 +14,11 @@ from app.views.containers.home.inventario.inventario_container import Inventario
 from app.views.containers.home.usuarios.users_settings_container import UsersSettingsContainer
 from app.views.containers.home.agenda.agenda_container import AgendaContainer
 from app.views.containers.home.servicios.servicios import ServiciosContainer
-from app.views.containers.settings.settings import SettingsDBContainer  
+from app.views.containers.settings.settings import SettingsDBContainer
 from app.views.containers.home.cortes.cortes_container import CortesContainer
+# ✅ NUEVO: Contabilidad
+from app.views.containers.home.contabilidad.contabilidad_container import ContabilidadContainer
+
 
 @class_singleton
 class WindowMain:
@@ -122,14 +125,12 @@ class WindowMain:
     # =========================================================
     # Sanitización profunda (evita ciclos de referencia)
     # =========================================================
-    # WindowMain._sanitize_control_tree
     def _sanitize_control_tree(self, root: ft.Control | None):
         if not root:
             return
         visited = set()
 
         def _strip_controls_in(obj):
-            # Quita cualquier Control anidado en data
             import flet as ft
             if isinstance(obj, ft.Control):
                 return None
@@ -148,17 +149,14 @@ class WindowMain:
                 return
             visited.add(cid)
 
-            # ✅ Limpiamos solo data "peligrosa" (que contenga Controls)
             try:
                 if hasattr(c, "data") and c.data is not None:
                     cleaned = _strip_controls_in(c.data)
-                    # Si cambió, reasignamos; si no, respetamos data original
                     if cleaned is None or cleaned is not c.data:
                         c.data = cleaned
             except Exception:
                 pass
 
-            # Continuar DFS
             for attr in ("content", "controls"):
                 val = getattr(c, attr, None)
                 if isinstance(val, ft.Control):
@@ -170,7 +168,6 @@ class WindowMain:
 
         _walk(root)
         print("🧹 [SANITIZE] Árbol de controles limpiado (data sin Controls).")
-
 
     def _pre_update_sanitize(self):
         try:
@@ -239,7 +236,7 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            # ✅ NUEVA RUTA: Servicios
+            # ✅ Servicios
             if path in ("/servicios", "/services"):
                 self._current_module = "servicios"
                 self._set_content([ServiciosContainer()], use_navbar=True)
@@ -264,13 +261,19 @@ class WindowMain:
                 self._set_content([SettingsDBContainer(self._page)], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
-            
+
             if path in ("/cortes", "/pagos", "/cortes-pagos"):
                 self._current_module = "cortes"
                 self._set_content([CortesContainer()], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
 
+            # ✅ NUEVA RUTA: Contabilidad
+            if path in ("/contabilidad", "/contable", "/accounting"):
+                self._current_module = "contabilidad"
+                self._set_content([ContabilidadContainer()], use_navbar=True)
+                self._sync_nav_selection(path)
+                return
 
             # Ruta no reconocida → redirigir a /home
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
@@ -280,7 +283,6 @@ class WindowMain:
 
         except Exception as e:
             print(f"❌ [ROUTE] Error manejando ruta {path}: {e}")
-
 
     def _sync_nav_selection(self, path: str):
         try:
@@ -306,7 +308,6 @@ class WindowMain:
                 colors = self.theme_ctrl.get_colors(self._current_module or "home")
                 if self._content_host:
                     self._content_host.bgcolor = colors.get("BG_COLOR")
-                    # ⚠️ Importante: si hay un solo control, lo asignamos directo (sin Column)
                     if len(controls) == 1:
                         self._content_host.content = controls[0]
                     else:

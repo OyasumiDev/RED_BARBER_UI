@@ -128,7 +128,7 @@ class NavBarContainer(ft.Container):
     # ======================================================
     # Construcción UI
     # ======================================================
-    def _menu_items(self) -> List[Dict[str, Any]]: 
+    def _menu_items(self) -> List[Dict[str, Any]]:
         # Detecta usuario en sesión desde client_storage (seteado en login)
         try:
             sess = self.app.get_client_value("app.user", None)
@@ -196,7 +196,7 @@ class NavBarContainer(ft.Container):
                 "route": "/agenda",
                 "key": "agenda",
             },
-            # ← NUEVO: Cortes (Pagos)
+            # Cortes (visible para todos, como ya lo tenías)
             {
                 "icon_src": "assets/buttons/cortes-area-button.png",
                 "label": "Cortes",
@@ -208,6 +208,16 @@ class NavBarContainer(ft.Container):
 
         # Ítems SOLO para ROOT
         if is_root:
+            # 👉 NUEVO botón de CONTABILIDAD solo para ROOT
+            items.append(
+                {
+                    "icon_src": "assets/buttons/contabilidad-area-button.png",
+                    "label": "Contabilidad",
+                    "tooltip": "Ganancias y nómina",
+                    "route": "/contabilidad",      # ← ruta del container de contabilidad
+                    "key": "contabilidad",
+                }
+            )
             items.extend(
                 [
                     {
@@ -221,7 +231,7 @@ class NavBarContainer(ft.Container):
                         "icon_src": "assets/buttons/settings-button.png",
                         "label": "Configuración",
                         "tooltip": "Ajustes del sistema (DB)",
-                        "route": "/configuracion",  # ← Settings DB
+                        "route": "/configuracion",
                         "key": "configuracion",
                     },
                 ]

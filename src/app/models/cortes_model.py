@@ -15,6 +15,7 @@ from app.core.enums.e_promos import E_PROMO, E_PROMO_TIPO      # promos         
 
 # Models para cálculos integrados
 from app.models.servicios_model import ServiciosModel  # precio_base / monto_libre  :contentReference[oaicite:19]{index=19}
+from app.models.trabajadores_model import TrabajadoresModel
 from app.models.agenda_model import AgendaModel                  # actualizar_cita(...estado=COMPLETADA)  :contentReference[oaicite:21]{index=21}
 from app.models.promos_model import PromosModel                  # find_applicable() / aplicar_descuento()  :contentReference[oaicite:22]{index=22}
 
@@ -32,6 +33,7 @@ class CortesModel:
         self.db = DatabaseMysql()
         self._ensure_schema()
         self.servicios = ServiciosModel()
+        self.trabajadores = TrabajadoresModel()
         self.agenda    = AgendaModel()
         self.promos    = PromosModel()
 
@@ -97,15 +99,31 @@ class CortesModel:
             self.db.run_query(f"CREATE INDEX {name} ON {E_CORTE.TABLE.value} ({col})")
 
     # ===================== Lógica de cálculo =====================
+    def _resolve_trabajador_pct(self, trabajador_id: Optional[int]) -> Decimal:
+        if not trabajador_id:
+            return Decimal("50.00")
+        try:
+            trab = self.trabajadores.get_by_id(int(trabajador_id)) or {}
+        except Exception:
+            trab = {}
+        for key in ("comision_porcentaje", "comision_pct", "comision"):
+            if key in trab and trab[key] not in (None, ""):
+                try:
+                    return Decimal(str(trab[key])).quantize(Decimal("0.01"))
+                except Exception:
+                    continue
+        return Decimal("50.00")
+
     def _calcular_totales(
         self,
         *,
         servicio_row: Optional[Dict],
+        trabajador_id: Optional[int],
         dt: datetime,
         aplicar_promo: bool,
         precio_base_manual: Optional[float] = None
-    ) -> Tuple[Decimal, Decimal, Decimal, Optional[int]]:
-        """Devuelve (precio_base, descuento, total, promo_id)."""
+    ) -> Tuple[Decimal, Decimal, Decimal, Optional[int], Decimal, Decimal, Decimal]:
+        """Devuelve (precio_base, descuento, total, promo_id, pct_snapshot, comision_monto, sucursal_monto)."""
         # 1) precio base
         manual_override = None
         if precio_base_manual is not None:
@@ -141,7 +159,11 @@ class CortesModel:
         else:
             total = precio_base_val
 
-        return (precio_base_val, descuento, total, promo_id)
+        pct = self._resolve_trabajador_pct(trabajador_id)
+        comision = (total * pct / Decimal("100")).quantize(Decimal("0.01"))
+        sucursal = (total - comision).quantize(Decimal("0.01"))
+
+        return (precio_base_val, descuento, total, promo_id, pct, comision, sucursal)
 
     @staticmethod
     def _extract_servicio_id(servicio_row: Optional[Dict]) -> Optional[int]:
@@ -187,8 +209,9 @@ class CortesModel:
                 srv_row = None
 
         # Cálculos
-        precio_base, desc, total, promo_id = self._calcular_totales(
+        precio_base, desc, total, promo_id, pct_snapshot, com_monto, suc_monto = self._calcular_totales(
             servicio_row=srv_row,
+            trabajador_id=trabajador_id,
             dt=dt,
             aplicar_promo=bool(aplicar_promo),
             precio_base_manual=precio_base_manual
@@ -198,6 +221,7 @@ class CortesModel:
             E_CORTE.FECHA_HORA.value, E_CORTE.TIPO.value, E_CORTE.TRABAJADOR_ID.value,
             E_CORTE.SERVICIO_ID.value, E_CORTE.AGENDA_ID.value, E_CORTE.PROMO_ID.value,
             E_CORTE.PRECIO_BASE.value, E_CORTE.DESCUENTO.value, E_CORTE.TOTAL.value,
+            E_CORTE.COM_PCT.value, E_CORTE.COM_MONTO.value, E_CORTE.SUC_MONTO.value,
             E_CORTE.DESCRIPCION.value, E_CORTE.CREATED_BY.value
         ]
         vals = [
@@ -206,6 +230,7 @@ class CortesModel:
             int(agenda_id) if agenda_id else None,
             int(promo_id) if promo_id else None,
             float(precio_base), float(desc), float(total),
+            float(pct_snapshot), float(com_monto), float(suc_monto),
             descripcion, created_by
         ]
         placeholders = ",".join(["%s"] * len(cols))
