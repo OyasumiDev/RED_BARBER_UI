@@ -179,6 +179,96 @@ class CortesModel:
                 continue
         return None
 
+    @staticmethod
+    def _coerce_datetime(value: Any, fallback: datetime) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                pass
+        return fallback
+
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        if value in (None, "", "None"):
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        if value in (None, "", "None"):
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("1", "true", "t", "si", "sí", "yes", "y"):
+                return True
+            if v in ("0", "false", "f", "no", "n", ""):
+                return False
+        return default
+
+    def _build_agenda_completion_payload(
+        self,
+        *,
+        agenda_id: int,
+        corte_dt: datetime,
+        descripcion: Optional[str],
+        trabajador_id: Optional[int],
+        servicio_id: Optional[int],
+        updated_by: Optional[int],
+    ) -> Dict[str, Any]:
+        try:
+            cita = self.agenda.get_by_id(int(agenda_id)) or {}
+        except Exception:
+            cita = {}
+
+        titulo = cita.get(E_AGENDA.TITULO.value) or descripcion
+        inicio = self._coerce_datetime(cita.get(E_AGENDA.INICIO.value), corte_dt)
+        todo_dia = self._coerce_bool(cita.get(E_AGENDA.TODO_DIA.value))
+        color = cita.get(E_AGENDA.COLOR.value)
+        notas = cita.get(E_AGENDA.NOTAS.value)
+        cliente_nombre = cita.get(E_AGENDA.CLIENTE_NOM.value) or descripcion
+        cliente_tel = cita.get(E_AGENDA.CLIENTE_TEL.value)
+        trabajador_val = self._coerce_int(cita.get(E_AGENDA.TRABAJADOR_ID.value)) or trabajador_id
+        servicio_val = self._coerce_int(cita.get("servicio_id")) or servicio_id
+        cantidad = self._coerce_int(cita.get("cantidad"))
+        precio_unit = self._coerce_float(cita.get("precio_unit"))
+        total = self._coerce_float(cita.get("total"))
+
+        return {
+            "cita_id": int(agenda_id),
+            "titulo": titulo,
+            "inicio": inicio,
+            "fin": corte_dt,
+            "todo_dia": todo_dia,
+            "color": color,
+            "notas": notas,
+            "trabajador_id": trabajador_val,
+            "cliente_nombre": cliente_nombre,
+            "cliente_tel": cliente_tel,
+            "estado": E_AGENDA_ESTADO.COMPLETADA.value,
+            "servicio_id": servicio_val,
+            "cantidad": cantidad,
+            "precio_unit": precio_unit,
+            "total": total,
+            "updated_by": updated_by,
+        }
+
     # ============================ CRUD ============================
     def crear_corte(
         self,
@@ -239,15 +329,17 @@ class CortesModel:
             tuple(vals)
         )
 
-        # Si viene de Agenda: marcar completada
+        # Si viene de Agenda: marcar completada (conservando datos originales)
         if agenda_id:
-            self.agenda.actualizar_cita(
-                cita_id=int(agenda_id),
-                titulo=None,
-                inicio=dt,
-                fin=dt,
-                estado=E_AGENDA_ESTADO.COMPLETADA.value
-            )  # :contentReference[oaicite:28]{index=28}
+            payload = self._build_agenda_completion_payload(
+                agenda_id=int(agenda_id),
+                corte_dt=dt,
+                descripcion=descripcion,
+                trabajador_id=int(trabajador_id),
+                servicio_id=int(servicio_id) if servicio_id else None,
+                updated_by=created_by,
+            )
+            self.agenda.actualizar_cita(**payload)  # :contentReference[oaicite:28]{index=28}
 
         return {"status": "success", "message": "Corte registrado."}
 

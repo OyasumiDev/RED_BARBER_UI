@@ -10,7 +10,7 @@ from app.views.containers.nvar.layout_controller import LayoutController
 # Models
 from app.models.agenda_model import AgendaModel
 from app.models.trabajadores_model import TrabajadoresModel
-from app.models.servicios_model import ServiciosModel  # catÃ¡logo de servicios
+from app.models.servicios_model import ServiciosModel  # catálogo de servicios
 from app.models.cortes_model import CortesModel
 
 # Enums
@@ -28,7 +28,11 @@ from app.views.modals.modal_datetime_picker import DateTimeModalPicker
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
-DEFAULT_DURATION_MIN = 60  # duraciÃ³n por defecto para nuevas citas
+DEFAULT_DURATION_MIN = 60  # duración por defecto para nuevas citas
+
+DOT = "\u00b7"      # ·
+EM_DASH = "\u2014"  # —
+NBSP = "\u00a0"     # no-break space
 
 
 def _txt(v: Any) -> str:
@@ -73,15 +77,15 @@ def _only_digits(s: str) -> str:
 
 
 # ===================================================================
-#  Agenda por dÃ­a (expansible) â€” SIN NOTAS
+#  Agenda por día (expansible) — SIN NOTAS
 # ===================================================================
 class AgendaContainer(ft.Container):
     """
     - Toolbar compacta: filtros (estado) + 'Nueva cita'.
-    - Tabla expansible: 1 fila por dÃ­a (solo si HAY citas).
-    - Rango de trabajo: semana actual (lunesâ†’domingo) sin navegaciÃ³n manual.
-    - Integrada con Trabajadores/Servicios + TelÃ©fono cliente.
-    - UX 14": columnas angostas, tipografÃ­a 11, acciones compactas.
+    - Tabla expansible: 1 fila por día (SIEMPRE muestra la semana).
+    - Rango de trabajo: semana actual (lunes→domingo) sin navegación manual.
+    - Integrada con Trabajadores/Servicios + Teléfono cliente.
+    - UX 14": columnas angostas, tipografía 11, acciones compactas.
     - SIN campo 'Notas' en UI ni en guardado.
     """
 
@@ -91,7 +95,8 @@ class AgendaContainer(ft.Container):
         # Core
         self.app_state = AppState()
         self.page = self.app_state.page
-        self.colors = self.app_state.get_colors()
+        # ✅ paleta del área AGENDA vía AppState
+        self.colors = self.app_state.get_colors("agenda")
         self.layout_ctrl = LayoutController()
 
         # Permisos
@@ -115,7 +120,7 @@ class AgendaContainer(ft.Container):
         # Modelos
         self.model = AgendaModel()
         self.trab_model = TrabajadoresModel()
-        self.serv_model = ServiciosModel()  # catÃ¡logo (sin pivot con trabajador)
+        self.serv_model = ServiciosModel()  # catálogo (sin pivot con trabajador)
         self.cortes_model = CortesModel()
 
         # Cache simple de trabajadores (id -> nombre) para etiquetas
@@ -128,10 +133,10 @@ class AgendaContainer(ft.Container):
 
         # Refs
         self._edit_controls: Dict[str, Dict[str, ft.Control]] = {}
-        self._day_tables: Dict[str, TableBuilder] = {}        # dÃ­a ISO -> TableBuilder
+        self._day_tables: Dict[str, TableBuilder] = {}        # día ISO -> TableBuilder
         self._editing_rows: Dict[str, set[Any]] = {}
 
-        # DÃ­a actualmente expandido (para que 'Nueva cita' use el contexto)
+        # Día actualmente expandido (para que 'Nueva cita' use el contexto)
         self._opened_day_iso: Optional[str] = None
 
         # UI base
@@ -152,9 +157,11 @@ class AgendaContainer(ft.Container):
             self._layout_listener = None
 
     # ---------------------------------------------------------------
-    # Toolbar (compacta, sin navegaciÃ³n de fechas)
+    # Toolbar (compacta, sin navegación de fechas)
     # ---------------------------------------------------------------
     def _build_toolbar(self):
+        pal = self.colors
+
         # Dropdown Estado
         self.estado_dd = ft.Dropdown(
             label="Estado",
@@ -166,10 +173,10 @@ class AgendaContainer(ft.Container):
             dense=True,
         )
         self.estado_dd.text_style = ft.TextStyle(
-            color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=12
+            color=pal.get("FG_COLOR", ft.colors.ON_SURFACE), size=12
         )
 
-        # BotÃ³n limpiar
+        # Botón limpiar
         self.clear_btn = ft.IconButton(
             ft.icons.CLEAR_ALL,
             tooltip="Limpiar filtros",
@@ -178,12 +185,16 @@ class AgendaContainer(ft.Container):
             style=ft.ButtonStyle(padding=0),
         )
 
-        # "Nueva cita" -> abre el modal o usa dÃ­a abierto
+        # "Nueva cita"
         self.new_btn = ft.FilledButton(
             "Nueva cita",
             icon=ft.icons.ADD,
             on_click=lambda e: self._insert_new_from_modal_global(),
-            style=ft.ButtonStyle(padding=ft.padding.symmetric(6, 6)),
+            style=ft.ButtonStyle(
+                padding=ft.padding.symmetric(6, 6),
+                bgcolor=pal.get("ACCENT"),
+                color=pal.get("ON_PRIMARY", ft.colors.WHITE),
+            ),
         )
 
         # Layout responsivo
@@ -215,10 +226,12 @@ class AgendaContainer(ft.Container):
     # Body
     # ---------------------------------------------------------------
     def _build_body(self):
+        pal = self.colors
+
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
-            bgcolor=self.colors.get("BG_COLOR"),
+            bgcolor=pal.get("BG_COLOR"),
             content=ft.Column(
                 controls=[],
                 alignment=ft.MainAxisAlignment.START,
@@ -228,15 +241,15 @@ class AgendaContainer(ft.Container):
             ),
         )
 
-        # columnas del grupo (dÃ­as)
+        # columnas del grupo (días)
         self.GDIA = "dia"       # date ISO
-        self.GRES = "resumen"   # resumen del dÃ­a
+        self.GRES = "resumen"   # resumen del día
         self.GCNT = "citas"     # conteo
 
         columns = [
-            {"key": self.GDIA, "title": "DÃ­a", "width": 180, "align": "start", "formatter": self._fmt_day_title},
+            {"key": self.GDIA, "title": "D\u00eda", "width": 180, "align": "start", "formatter": self._fmt_day_title},
             {"key": self.GRES, "title": "Resumen", "width": 360, "align": "start", "formatter": self._fmt_day_resumen},
-            {"key": self.GCNT, "title": "NÂ°", "width": 42, "align": "center",
+            {"key": self.GCNT, "title": "N\u00b0", "width": 42, "align": "center",
              "formatter": lambda v, r: ft.Text(str(v or 0), size=11)},
         ]
 
@@ -250,12 +263,12 @@ class AgendaContainer(ft.Container):
         col = self.table_container.content
         col.controls.clear()
         col.controls.append(self.toolbar)
-        col.controls.append(ft.Divider(color=self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)))
+        col.controls.append(ft.Divider(color=pal.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)))
         col.controls.append(self.expansive.build())
 
         self.content = ft.Container(
             expand=True,
-            bgcolor=self.colors.get("BG_COLOR"),
+            bgcolor=pal.get("BG_COLOR"),
             padding=6,
             content=self.table_container,
         )
@@ -263,25 +276,31 @@ class AgendaContainer(ft.Container):
         self._refrescar_dataset()
 
     # ---------------------------------------------------------------
-    # Dataset (solo dÃ­as con citas) â€” semana actual
+    # Dataset — semana actual (SIEMPRE muestra los 7 días)
     # ---------------------------------------------------------------
-    def _range_bounds(self) -> Tuple[datetime, datetime]:
-        base = self.base_day  # fijado a "hoy" (sin UI de navegaciÃ³n)
+    def _range_bounds_with_days(self) -> Tuple[datetime, datetime, List[date]]:
+        base = self.base_day
         monday = base - timedelta(days=(base.weekday() % 7))  # 0 lunes .. 6 domingo
-        ds = [monday + timedelta(days=i) for i in range(self.days_span)]
-        start_dt = datetime.combine(ds[0], time.min)
-        end_dt = datetime.combine(ds[-1], time.max)
-        return start_dt, end_dt
+        days = [monday + timedelta(days=i) for i in range(self.days_span)]
+        start_dt = datetime.combine(days[0], time.min)
+        end_dt = datetime.combine(days[-1], time.max)
+        return start_dt, end_dt, days
 
     def _fetch_group_rows(self) -> List[Dict[str, Any]]:
-        start_dt, end_dt = self._range_bounds()
+        start_dt, end_dt, all_days = self._range_bounds_with_days()
 
-        rows = self.model.listar_por_rango(
-            inicio=start_dt,
-            fin=end_dt,
-            estado=self.filter_estado,
-        ) or []
+        # Intento con filtro; si queda vacío, fallback sin filtro para no dejar la vista en blanco por un mal estado
+        try:
+            rows = self.model.listar_por_rango(inicio=start_dt, fin=end_dt, estado=self.filter_estado) or []
+        except Exception:
+            rows = []
+        if not rows and self.filter_estado is not None:
+            try:
+                rows = self.model.listar_por_rango(inicio=start_dt, fin=end_dt, estado=None) or []
+            except Exception:
+                rows = []
 
+        # Agrupar por día
         by_day: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
             ini = r.get(E_AGENDA.INICIO.value)
@@ -292,22 +311,22 @@ class AgendaContainer(ft.Container):
                     ini = datetime.fromisoformat(ini)
                 except Exception:
                     continue
-            d = ini.date()
-            key = d.isoformat()
+            key = ini.date().isoformat()
             by_day.setdefault(key, []).append(r)
 
+        # Construir grupos para TODA la semana (aunque no haya citas)
         groups: List[Dict[str, Any]] = []
-        for key, citas in sorted(by_day.items()):
-            d = date.fromisoformat(key)
-            pills = []
-            sorted_day = sorted(citas, key=lambda x: (x.get(E_AGENDA.INICIO.value) or ""))
-            for ev in sorted_day[:3]:
+        for d in all_days:
+            key = d.isoformat()
+            citas = sorted(by_day.get(key, []), key=lambda x: (x.get(E_AGENDA.INICIO.value) or ""))
+            pills: List[str] = []
+            for ev in citas[:3]:
                 h = _hfmt(ev.get(E_AGENDA.INICIO.value))
                 cli = ev.get(E_AGENDA.CLIENTE_NOM.value) or ""
                 pills.append(f"{h} {cli}".strip())
             groups.append({
                 self.GDIA: key,
-                self.GRES: " Â· ".join(pills) if pills else "â€”",
+                self.GRES: (f" {DOT} ").join(pills) if pills else EM_DASH,
                 self.GCNT: len(citas),
                 "_date_obj": d,
             })
@@ -319,7 +338,7 @@ class AgendaContainer(ft.Container):
         self._safe_update()
 
     # ---------------------------------------------------------------
-    # Formatters (grupo dÃ­a)
+    # Formatters (grupo día)
     # ---------------------------------------------------------------
     def _fmt_day_title(self, value: Any, row: Dict[str, Any]) -> ft.Control:
         try:
@@ -341,7 +360,7 @@ class AgendaContainer(ft.Container):
             row_controls.append(
                 ft.IconButton(
                     ft.icons.ADD,
-                    tooltip="Nueva cita en este dÃ­a",
+                    tooltip="Nueva cita en este d\u00eda",
                     on_click=lambda e, d=d: self._insert_new_for_day(d),
                     icon_size=16,
                     style=ft.ButtonStyle(padding=0),
@@ -354,7 +373,7 @@ class AgendaContainer(ft.Container):
         return ft.Text(_txt(value), size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
     # ---------------------------------------------------------------
-    # Detail builder (tabla hija por dÃ­a) â€” SIN NOTAS
+    # Detail builder (tabla hija por día) — SIN NOTAS
     # ---------------------------------------------------------------
     def _detail_builder_for_day(self, group_row: Dict[str, Any]) -> ft.Control:
         DIA = group_row[self.GDIA]  # ISO
@@ -371,7 +390,6 @@ class AgendaContainer(ft.Container):
         TRAB    = E_AGENDA.TRABAJADOR_ID.value
         EST     = E_AGENDA.ESTADO.value
 
-        # Columnas compactas (14"), mÃ¡s anchas Cliente/Servicio aprovechando espacio
         columns = [
             {"key": H_INI,   "title": "Inicio",    "width": 58,  "align": "center",
              "formatter": lambda v, r, dia=DIA: self._fmt_hora_cell(v, r, dia, key=H_INI)},
@@ -379,7 +397,7 @@ class AgendaContainer(ft.Container):
              "formatter": lambda v, r, dia=DIA: self._fmt_hora_cell(v, r, dia, key=H_FIN)},
             {"key": CLIENTE, "title": "Cliente",   "width": 170, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_text_cell(v, r, dia, key=CLIENTE, hint='Nombre cliente')},
-            {"key": TEL,     "title": "Tel.",      "width": 108, "align": "start",
+            {"key": TEL,     "title": "Tel\u00e9fono", "width": 108, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_tel_cell(v, r, dia, key=TEL)},
             {"key": SERV_ID, "title": "Servicio",  "width": 170, "align": "start",
              "formatter": lambda v, r, dia=DIA: self._fmt_servicio_cell(r.get(SERV_ID), r, dia, key=SERV_ID)},
@@ -457,12 +475,12 @@ class AgendaContainer(ft.Container):
         return wrapper
 
     # ---------------------------------------------------------------
-    # IntegraciÃ³n con el modal (nuevo/compacto) y contexto de dÃ­a
+    # Integración con el modal (nuevo/compacto) y contexto de día
     # ---------------------------------------------------------------
     def _insert_new_from_modal_global(self):
-        """BotÃ³n 'Nueva cita' de la toolbar. Si hay dÃ­a abierto, solo pedir HORA."""
+        """Botón 'Nueva cita' de la toolbar. Si hay día abierto, solo pedir HORA."""
         if not self.can_add:
-            self._snack_error("âŒ No tienes permisos para crear citas.")
+            self._snack_error("No tienes permisos para crear citas.")
             return
 
         default_day: Optional[date] = None
@@ -472,7 +490,7 @@ class AgendaContainer(ft.Container):
             except Exception:
                 default_day = None
 
-        # Sin dÃ­a abierto â†’ pedir fecha+hora (limitado a la semana visible)
+        # Sin día abierto → pedir fecha+hora (limitado a la semana visible)
         def on_selected(values: Sequence[datetime] | Sequence[str]):
             for dt in self._coerce_dt_list(values):
                 self._create_prefilled_row_for_datetime(dt)
@@ -490,12 +508,8 @@ class AgendaContainer(ft.Container):
         )
 
         picker.open(self.page)
-        start_dt, end_dt = self._range_bounds()
-        enabled = []
-        cur = start_dt.date()
-        while cur <= end_dt.date():
-            enabled.append(cur.isoformat())
-            cur += timedelta(days=1)
+        start_dt, end_dt, days = self._range_bounds_with_days()
+        enabled = [d.isoformat() for d in days]
         picker.set_enabled_dates(enabled)
 
         if default_day and default_day.isoformat() in enabled:
@@ -505,9 +519,9 @@ class AgendaContainer(ft.Container):
                 pass
 
     def _insert_new_for_day(self, d: date):
-        """BotÃ³n '+' en la fila del dÃ­a â†’ pide solo hora."""
+        """Botón '+' en la fila del día → pide solo hora."""
         if not self.can_add:
-            self._snack_error("âŒ No tienes permisos para crear citas.")
+            self._snack_error("No tienes permisos para crear citas.")
             return
 
         def on_selected(values: Sequence[datetime] | Sequence[str], _d=d):
@@ -525,14 +539,14 @@ class AgendaContainer(ft.Container):
             width=360,
             cell_size=22,
             title=f"Nueva cita ({d.strftime('%d/%m/%Y')})",
-            subtitle="Selecciona la hora para este dÃ­a.",
+            subtitle="Selecciona la hora para este d\u00eda.",
         )
 
         picker.open(self.page)
         picker.set_enabled_dates([d.isoformat()])
 
     def _coerce_dt_list(self, values: Sequence[datetime] | Sequence[str]) -> List[datetime]:
-        """Normaliza a lista de datetime (descarta None/formatos invÃ¡lidos)."""
+        """Normaliza a lista de datetime (descarta None/formatos inválidos)."""
         out: List[datetime] = []
         for v in values:
             if isinstance(v, datetime):
@@ -562,7 +576,7 @@ class AgendaContainer(ft.Container):
 
         new_group = {
             self.GDIA: dia_iso,
-            self.GRES: "â€”",
+            self.GRES: EM_DASH,
             self.GCNT: 0,
             "_date_obj": d,
         }
@@ -664,7 +678,7 @@ class AgendaContainer(ft.Container):
             return ft.Text(_txt(value), size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
         tf = ft.TextField(
             value=_txt(value),
-            hint_text="TelÃ©fono",
+            hint_text="Tel\u00e9fono",
             text_size=11,
             keyboard_type=ft.KeyboardType.PHONE,
             content_padding=ft.padding.symmetric(horizontal=6, vertical=4),
@@ -722,7 +736,7 @@ class AgendaContainer(ft.Container):
                     label = str(value or "")
             return ft.Text(label, size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
-        # En ediciÃ³n: dropdown con cache actualizada
+        # En edición: dropdown con cache actualizada
         opts = self._load_trab_options()
         dd = ft.Dropdown(value=str(value) if value is not None else None, options=opts, width=140, dense=True)
         dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=11)
@@ -746,7 +760,7 @@ class AgendaContainer(ft.Container):
             label = row.get("servicio_txt") or row.get(E_AGENDA.TITULO.value) or ""
             return ft.Text(label, size=11, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE))
 
-        # Servicios del catÃ¡logo (sin filtrar por trabajador)
+        # Servicios del catálogo (sin filtrar por trabajador)
         opciones: List[ft.dropdown.Option] = []
         try:
             servicios = self.serv_model.listar(activo=True) or []
@@ -762,7 +776,7 @@ class AgendaContainer(ft.Container):
         dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE), size=11)
         self._edit_controls[k][key] = dd
 
-        # Mantener tambiÃ©n el nombre textual seleccionado (para titulo en modelo)
+        # Mantener también el nombre textual seleccionado (para titulo en modelo)
         def _on_serv_change(e):
             try:
                 sel = next((o for o in dd.options if o.key == dd.value), None)
@@ -834,7 +848,7 @@ class AgendaContainer(ft.Container):
             rows = []
 
         for r in rows:
-            # excluir la misma cita en ediciÃ³n
+            # excluir la misma cita en edición
             rid = r.get(E_AGENDA.ID.value)
             try:
                 rid_int = int(rid) if rid is not None else None
@@ -852,7 +866,7 @@ class AgendaContainer(ft.Container):
             if tid_int != trabajador_id:
                 continue
 
-            # solo bloquea si estÃ¡ PROGRAMADA
+            # solo bloquea si está PROGRAMADA
             estado = (r.get(E_AGENDA.ESTADO.value) or "").strip().lower()
             if estado != E_AGENDA_ESTADO.PROGRAMADA.value.lower():
                 continue
@@ -920,10 +934,10 @@ class AgendaContainer(ft.Container):
         if status == "success":
             return "Cita completada y corte registrado."
         if status == "exists":
-            return "Cita completada (el corte ya existÃ­a)."
+            return "Cita completada (el corte ya existía)."
         if status in ("error", "skipped"):
             msg = result.get("message")
-            return f"Cita completada (sin corte automÃ¡tico: {msg})." if msg else None
+            return f"Cita completada (sin corte automático: {msg})." if msg else None
         return None
 
     # ---------------------------------------------------------------
@@ -1019,7 +1033,7 @@ class AgendaContainer(ft.Container):
 
     def _on_accept_row(self, dia_iso: str, row: Dict[str, Any]):
         if not (self.can_add or self.can_edit):
-            self._snack_error("âŒ No tienes permisos.")
+            self._snack_error("No tienes permisos.")
             return
 
         key = f"{dia_iso}:{row.get(E_AGENDA.ID.value) if row.get(E_AGENDA.ID.value) is not None else -1}"
@@ -1050,24 +1064,24 @@ class AgendaContainer(ft.Container):
             except Exception:
                 servicio_txt = ""
 
-        # Sanitizar telÃ©fono (opcional)
+        # Sanitizar teléfono (opcional)
         tel_digits = _only_digits(tel)
         if tel and len(tel_digits) < 7:
-            self._snack_error("âŒ TelÃ©fono invÃ¡lido (mÃ­n. 7 dÃ­gitos)")
+            self._snack_error("Teléfono inválido (mín. 7 dígitos)")
             return
 
         errores = []
         if not _valid_hhmm(h_ini):
-            errores.append("Hora de inicio invÃ¡lida (usa HH:MM)")
+            errores.append("Hora de inicio inválida (usa HH:MM)")
         if len(cliente) < 2:
-            errores.append("Cliente invÃ¡lido")
+            errores.append("Cliente inválido")
         if trabajador_id is None:
             errores.append("Selecciona un trabajador")
         if servicio_id is None:
             errores.append("Selecciona un servicio")
 
         if errores:
-            self._snack_error("âŒ " + " / ".join(errores))
+            self._snack_error(" / ".join(errores))
             return
 
         d = date.fromisoformat(dia_iso)
@@ -1082,7 +1096,7 @@ class AgendaContainer(ft.Container):
                 except Exception:
                     pass
             if fin_dt <= inicio_dt:
-                self._snack_error("âŒ Fin debe ser > Inicio (sello de finalizaciÃ³n)")
+                self._snack_error("Fin debe ser > Inicio (sello de finalización)")
                 return
         else:
             if _valid_hhmm(h_fin_visible):
@@ -1112,10 +1126,10 @@ class AgendaContainer(ft.Container):
                     c_fin = conflicto.get(E_AGENDA.FIN.value)
                     if isinstance(c_ini, str): c_ini = datetime.fromisoformat(c_ini)
                     if isinstance(c_fin, str): c_fin = datetime.fromisoformat(c_fin)
-                    rango_txt = f"{c_ini.strftime('%H:%M')}â€“{c_fin.strftime('%H:%M')}" if isinstance(c_ini, datetime) and isinstance(c_fin, datetime) else "en ese horario"
+                    rango_txt = f"{c_ini.strftime('%H:%M')}–{c_fin.strftime('%H:%M')}" if isinstance(c_ini, datetime) and isinstance(c_fin, datetime) else "en ese horario"
                 except Exception:
                     rango_txt = "en ese horario"
-                self._snack_error(f"âŒ {tname or 'El trabajador'} ya tiene una cita PROGRAMADA {rango_txt}. Cambia la hora o el trabajador.")
+                self._snack_error(f"{tname or 'El trabajador'} ya tiene una cita PROGRAMADA {rango_txt}. Cambia la hora o el trabajador.")
                 return
 
         uid = None
@@ -1159,9 +1173,9 @@ class AgendaContainer(ft.Container):
             )
 
         if res.get("status") == "success":
-            self._snack_ok("âœ… Cambios guardados.")
+            self._snack_ok("Cambios guardados.")
         else:
-            self._snack_error(f"âŒ {res.get('message', 'No se pudo guardar')}")
+            self._snack_error(res.get('message', 'No se pudo guardar'))
 
         self._edit_controls.pop(key, None)
         rid = row.get(E_AGENDA.ID.value)
@@ -1176,14 +1190,14 @@ class AgendaContainer(ft.Container):
 
     def _on_delete_row(self, dia_iso: str, row: Dict[str, Any]):
         if not self.can_delete:
-            self._snack_error("âŒ No tienes permisos para eliminar.")
+            self._snack_error("No tienes permisos para eliminar.")
             return
         rid = row.get(E_AGENDA.ID.value)
         if not rid:
             return
         res = self.model.eliminar_cita(int(rid))
         if res.get("status") == "success":
-            self._snack_ok("ðŸ—‘ï¸ Cita eliminada.")
+            self._snack_ok("Cita eliminada.")
             try:
                 rid_int = int(rid)
             except Exception:
@@ -1192,15 +1206,15 @@ class AgendaContainer(ft.Container):
             self._refresh_day_table(dia_iso)
             self._refrescar_dataset()
         else:
-            self._snack_error(f"âŒ {res.get('message', 'No se pudo eliminar')}")
+            self._snack_error(res.get('message', 'No se pudo eliminar'))
 
     def _quick_update_estado(self, dia_iso: str, row: Dict[str, Any], nuevo_estado: str):
         if not self.can_edit:
-            self._snack_error("âŒ Sin permisos para actualizar.")
+            self._snack_error("Sin permisos para actualizar.")
             return
         rid = row.get(E_AGENDA.ID.value)
         if rid in (None, "", 0):
-            self._snack_error("âŒ Registra la cita antes de actualizar el estado.")
+            self._snack_error("Registra la cita antes de actualizar el estado.")
             return
         try:
             rid_int = int(rid)
@@ -1299,13 +1313,17 @@ class AgendaContainer(ft.Container):
         corte_result = None
         if res.get("status") == "success":
             if nuevo_estado == E_AGENDA_ESTADO.COMPLETADA.value:
-                corte_result = self._create_corte_from_cita(row, rid_int, fin_dt, uid)
-                msg = self._format_corte_result(corte_result) or "? Cita marcada como completada."
+                # Efecto secundario opcional: no rompe UI si falla
+                try:
+                    corte_result = self._create_corte_from_cita(row, rid_int, fin_dt, uid)
+                    msg = self._format_corte_result(corte_result) or "Cita marcada como completada."
+                except Exception:
+                    msg = "Cita marcada como completada."
             else:
-                msg = "? Cita cancelada."
+                msg = "Cita cancelada."
             self._snack_ok(msg)
         else:
-            self._snack_error(f"?? {res.get('message', 'No se pudo actualizar el estado')}")
+            self._snack_error(res.get('message', 'No se pudo actualizar el estado'))
             return
 
         self._refresh_day_table(dia_iso)
@@ -1366,7 +1384,8 @@ class AgendaContainer(ft.Container):
     def did_mount(self):
         self._mounted = True
         self.page = self.app_state.get_page()
-        self.colors = self.app_state.get_colors()
+        # ✅ colores del área agenda
+        self.colors = self.app_state.get_colors("agenda")
         self._recolor_ui()
         self._safe_update()
 
@@ -1386,7 +1405,8 @@ class AgendaContainer(ft.Container):
             self._layout_listener = None
 
     def _on_theme_changed(self):
-        self.colors = self.app_state.get_colors()
+        # ✅ recolor con paleta 'agenda'
+        self.colors = self.app_state.get_colors("agenda")
         self._recolor_ui()
         self._refrescar_dataset()
 
@@ -1439,4 +1459,3 @@ class AgendaContainer(ft.Container):
         )
         self.page.snack_bar.open = True
         self._safe_update()
-

@@ -226,7 +226,8 @@ class LoginContainer(ft.Container):
 
     # ===================== AUTH =====================
     def on_login(self, e: ft.ControlEvent):
-        page: ft.Page | None = AppState().page
+        app_state = AppState()
+        page: ft.Page | None = app_state.page
 
         username = (self.user_field.value or "").strip()
         password = (self.password_field.value or "").strip()
@@ -267,14 +268,10 @@ class LoginContainer(ft.Container):
             }
             print(f"[DEBUG] on_login: session_user -> {session_user}")
 
-            if page:
-                try:
-                    page.client_storage.set("app.user", session_user)
-                except Exception as ex:
-                    print(f"[ERROR] on_login: client_storage.set() falló: {ex}")
-                    traceback.print_exc()
-            else:
-                print("[ERROR] on_login: AppState().page es None antes de client_storage.set")
+            if not page:
+                print("[WARN] on_login: Page no disponible al intentar persistir app.user (se guardará solo en memoria)")
+
+            app_state.set_client_value("app.user", session_user)
 
             # Redirección según rol (default: /trabajadores)
             dest = self._route_after_login(session_user)

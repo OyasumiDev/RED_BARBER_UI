@@ -75,7 +75,11 @@ class AppState:
         return self.data.get(key, default)
 
     def set_client_value(self, key: str, value: Any):
-        self.set(key, value)
+        if value is None:
+            self.clear_client_value(key)
+            return
+
+        self.data[key] = value
         if self.page:
             try:
                 self.page.client_storage.set(key, value)
@@ -83,13 +87,28 @@ class AppState:
                 pass
 
     def get_client_value(self, key: str, default: Any = None):
+        if key in self.data:
+            val = self.data[key]
+            return val if val is not None else default
+
         if self.page:
             try:
                 v = self.page.client_storage.get(key)
-                return v if v is not None else default
+                if v is not None:
+                    self.data[key] = v
+                    return v
             except Exception:
                 return default
-        return self.get(key, default)
+
+        return default
+
+    def clear_client_value(self, key: str):
+        self.data.pop(key, None)
+        if self.page:
+            try:
+                self.page.client_storage.remove(key)
+            except Exception:
+                pass
 
     # =========================================================
     # Tema global (persistencia + notificación)

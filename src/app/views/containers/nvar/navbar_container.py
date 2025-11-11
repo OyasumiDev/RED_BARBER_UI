@@ -400,14 +400,10 @@ class NavBarContainer(ft.Container):
             )
 
             # 2) Limpiar sesión y evitar rebotes
-            if page:
-                # Claves típicas de sesión (amplía si usas otras)
-                for k in ("app.user", "session.user", "auth.token"):
-                    try:
-                        page.client_storage.remove(k)
-                    except Exception:
-                        pass
+            for k in ("app.user", "session.user", "auth.token"):
+                self.app.clear_client_value(k)
 
+            if page:
                 # Evitar que algún handler intente redirigir al login
                 try:
                     page.on_route_change = None

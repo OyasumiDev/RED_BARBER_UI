@@ -316,7 +316,7 @@ class PaletteFactory:
                 },
             },
 
-            # -------- NUEVO: contabilidad (ganancias + nómina) --------
+            # -------- ACTUALIZADO: contabilidad (ganancias + nómina) --------
             "contabilidad": {
                 "light": {
                     "BG_COLOR":  "#F9FAFB",
@@ -324,12 +324,12 @@ class PaletteFactory:
                     "CARD_BG":   "#FFFFFF",
                     "BTN_BG":    "#F3F4F6",
                     "FIELD_BG":  "#F3F4F6",
-                    "ICON_COLOR": ft.colors.BLACK,
+                    "ICON_COLOR": "#111827",
 
                     "ACCENT":    "#D32F2F",
-                    "DIVIDER_COLOR": ft.colors.RED_300,
-                    "BORDER_COLOR":  ft.colors.with_opacity(0.12, ft.colors.BLACK),
-                    "HOVER_BG":      ft.colors.with_opacity(0.06, ft.colors.RED_600),
+                    "DIVIDER_COLOR": "#E57373",             # RED_300
+                    "BORDER_COLOR":  "rgba(17,24,39,0.12)",
+                    "HOVER_BG":      "rgba(211,47,47,0.06)",
 
                     # Etiquetas / chips
                     "CHIP_OK_BG":     "#E8F5E9",
@@ -350,14 +350,14 @@ class PaletteFactory:
                     "BG_COLOR":  "#0F1115",
                     "FG_COLOR":  "#E5E7EB",
                     "CARD_BG":   "#1C1F26",
-                    "BTN_BG":    ft.colors.GREY_800,
+                    "BTN_BG":    "rgba(255,255,255,0.06)",   # GREY_800 aprox
                     "FIELD_BG":  "#101318",
-                    "ICON_COLOR": ft.colors.GREY_300,
+                    "ICON_COLOR": "#E5E7EB",
 
-                    "ACCENT":    ft.colors.RED_ACCENT_200,
-                    "DIVIDER_COLOR": ft.colors.with_opacity(0.45, ft.colors.RED_ACCENT_200),
-                    "BORDER_COLOR":  ft.colors.with_opacity(0.20, ft.colors.WHITE),
-                    "HOVER_BG":      ft.colors.with_opacity(0.08, ft.colors.RED_ACCENT_200),
+                    "ACCENT":         "#FF5252",            # RED_ACCENT_200
+                    "DIVIDER_COLOR":  "rgba(255,82,82,0.45)",
+                    "BORDER_COLOR":   "rgba(255,255,255,0.20)",
+                    "HOVER_BG":       "rgba(255,82,82,0.08)",
 
                     "CHIP_OK_BG":     "rgba(102,187,106,0.15)",
                     "CHIP_OK_TXT":    "#A5D6A7",

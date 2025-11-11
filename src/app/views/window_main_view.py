@@ -1,6 +1,7 @@
 from __future__ import annotations
 import flet as ft
-from typing import Any
+from typing import Any, Optional
+
 from app.helpers.class_singleton import class_singleton
 from app.config.application.app_state import AppState
 from app.config.application.theme_controller import ThemeController
@@ -16,29 +17,54 @@ from app.views.containers.home.agenda.agenda_container import AgendaContainer
 from app.views.containers.home.servicios.servicios import ServiciosContainer
 from app.views.containers.settings.settings import SettingsDBContainer
 from app.views.containers.home.cortes.cortes_container import CortesContainer
-# ✅ NUEVO: Contabilidad
+# ✅ Contabilidad
 from app.views.containers.home.contabilidad.contabilidad_container import ContabilidadContainer
 
 
 @class_singleton
 class WindowMain:
     def __init__(self):
-        self._page: ft.Page | None = None
+        self._page: Optional[ft.Page] = None
         self.theme_ctrl = ThemeController()
 
-        self.nav_bar: NavBarContainer | None = None
-        self.content_area: ft.Container | None = None
-        self._nav_host: ft.Container | None = None
-        self._content_host: ft.Container | None = None
-        self._current_module: str | None = None
+        self.nav_bar: Optional[NavBarContainer] = None
+        self.content_area: Optional[ft.Container] = None
+        self._nav_host: Optional[ft.Container] = None
+        self._content_host: Optional[ft.Container] = None
+        self._current_module: Optional[str] = None
 
         # Flags
         self._navbar_initialized: bool = False
-        self._shell_ready: bool = False  # ⬅️ Shell persistente
+        self._shell_ready: bool = False  # Shell persistente
 
-    # =========================================================
-    # Entry point
-    # =========================================================
+    # ------------------------------- Utils ---------------------------------
+    @staticmethod
+    def _coerce_color(val: Any, default: str) -> str:
+        """
+        Asegura que las propiedades de color sean cadenas (hex/rgba/nombre).
+        Si llega un valor no escalar o vacío, usa 'default'.
+        """
+        return val if isinstance(val, str) and val.strip() else default
+
+    def _is_root(self) -> bool:
+        """Verifica si el usuario actual es root (por rol o username)."""
+        try:
+            app = AppState()
+            user = None
+            # Soporte para diferentes APIs del AppState
+            if hasattr(app, "get"):
+                user = app.get("app.user") or app.get("user") or {}
+            if (not user) and hasattr(app, "get_client_value"):
+                user = app.get_client_value("app.user", {})  # type: ignore[attr-defined]
+            if isinstance(user, dict):
+                rol = str(user.get("rol", "")).lower()
+                username = str(user.get("username", "")).lower()
+                return rol == "root" or username == "root"
+        except Exception:
+            pass
+        return False
+
+    # ================================ Entry =================================
     def __call__(self, flet_page: ft.Page) -> Any:
         self._page = flet_page
         print("🚀 [BOOT] Inicializando WindowMain...")
@@ -48,21 +74,19 @@ class WindowMain:
         app.set_page(self._page)
         self.theme_ctrl.attach_page(self._page)
 
-        # Crear contenedor raíz
+        # Contenedor raíz
         self.content_area = ft.Container(expand=True)
         self._page.add(self.content_area)
         app.set("root_container", self.content_area)
         app.on_theme_change(self._apply_theme_to_shell)
 
-        # Ruta inicial
+        # Routing
         initial_path = self._page.route or "/login"
         print(f"🧭 [ROUTER] Ruta inicial detectada: {initial_path}")
         self._page.on_route_change = self.route_change
         self._page.go(initial_path)
 
-    # =========================================================
-    # Configuración de ventana
-    # =========================================================
+    # ========================= Configuración ventana =========================
     def _configurar_ventana(self):
         print("🪟 [WINDOW] Configurando ventana principal...")
         self._page.title = "Sistema de gestión"
@@ -73,16 +97,13 @@ class WindowMain:
         self._page.window_resizable = True
         self._page.window.center()
 
-    # =========================================================
-    # Shell persistente (Nav + Content)
-    # =========================================================
+    # ====================== Shell persistente (Nav + Content) =================
     def _ensure_shell(self):
         if self._shell_ready:
             return
 
         nav_colors = self.theme_ctrl.get_colors("navbar")
         content_colors = self.theme_ctrl.get_colors(self._current_module or "home")
-        app = AppState()
 
         # Crear NavBar si no existe
         if not self.nav_bar:
@@ -94,12 +115,12 @@ class WindowMain:
         self._nav_host = ft.Container(
             content=self.nav_bar,
             expand=False,
-            bgcolor=nav_colors.get("BG_COLOR"),
+            bgcolor=self._coerce_color(nav_colors.get("BG_COLOR"), ft.colors.SURFACE),
         )
         self._content_host = ft.Container(
-            content=None,  # ← inicia vacío; se llena en _set_content
+            content=None,  # se llena en _set_content
             expand=True,
-            bgcolor=content_colors.get("BG_COLOR"),
+            bgcolor=self._coerce_color(content_colors.get("BG_COLOR"), ft.colors.SURFACE),
         )
 
         layout_row = ft.Row(
@@ -113,25 +134,23 @@ class WindowMain:
         self.content_area.content = ft.Container(
             content=layout_row,
             expand=True,
-            bgcolor=content_colors.get("BG_COLOR"),
+            bgcolor=self._coerce_color(content_colors.get("BG_COLOR"), ft.colors.SURFACE),
         )
 
+        app = AppState()
         app.set("content_container", self._content_host)
         app.set("nav_container", self.nav_bar)
 
         self._shell_ready = True
         print("🧱 [SHELL] Estructura persistente creada.")
 
-    # =========================================================
-    # Sanitización profunda (evita ciclos de referencia)
-    # =========================================================
-    def _sanitize_control_tree(self, root: ft.Control | None):
+    # =================== Sanitización (evita ciclos en .data) =================
+    def _sanitize_control_tree(self, root: Optional[ft.Control]):
         if not root:
             return
         visited = set()
 
         def _strip_controls_in(obj):
-            import flet as ft
             if isinstance(obj, ft.Control):
                 return None
             if isinstance(obj, (list, tuple, set)):
@@ -175,28 +194,33 @@ class WindowMain:
         except Exception as e:
             print(f"⚠️ [SANITIZE] Error durante limpieza: {e}")
 
-    # =========================================================
-    # Aplicar tema
-    # =========================================================
+    # =============================== Tema ====================================
     def _apply_theme_to_shell(self):
         try:
             if not self._page:
                 return
-            app = AppState()
-            global_colors = self.theme_ctrl.get_colors()
-            self._page.bgcolor = global_colors.get("BG_COLOR")
 
+            global_colors = self.theme_ctrl.get_colors()
+
+            # Fondo global de la página
+            self._page.bgcolor = self._coerce_color(global_colors.get("BG_COLOR"), ft.colors.SURFACE)
+
+            # Fondo del content_area (root host)
             if self.content_area:
                 colors = self.theme_ctrl.get_colors(self._current_module) if self._current_module else global_colors
-                self.content_area.bgcolor = colors.get("BG_COLOR")
+                self.content_area.bgcolor = self._coerce_color(colors.get("BG_COLOR"), ft.colors.SURFACE)
 
+            # Fondo del host del navbar
             if self._nav_host:
-                self._nav_host.bgcolor = self.theme_ctrl.get_colors("navbar").get("BG_COLOR")
+                nav = self.theme_ctrl.get_colors("navbar")
+                self._nav_host.bgcolor = self._coerce_color(nav.get("BG_COLOR"), ft.colors.SURFACE_VARIANT)
 
+            # Fondo del host del contenido
             if self._content_host:
                 colors = self.theme_ctrl.get_colors(self._current_module) if self._current_module else global_colors
-                self._content_host.bgcolor = colors.get("BG_COLOR")
+                self._content_host.bgcolor = self._coerce_color(colors.get("BG_COLOR"), ft.colors.SURFACE)
 
+            app = AppState()
             app.set("content_container", self._content_host or self.content_area)
             app.set("nav_container", self.nav_bar)
 
@@ -204,20 +228,20 @@ class WindowMain:
         except Exception as e:
             print(f"⚠️ [THEME] Error al aplicar tema: {e}")
 
-    # =========================================================
-    # Manejo de rutas
-    # =========================================================
+    # ============================== Ruteo ====================================
     def route_change(self, route: ft.RouteChangeEvent):
         path = (route.route or "/login").rstrip("/") or "/login"
         print(f"🧭 [ROUTE] Cambio detectado → {path}")
 
         try:
+            # --- Vistas sin navbar ---
             if path == "/login":
                 self._current_module = None
                 self._set_content([LoginContainer()], use_navbar=False)
                 self._sync_nav_selection(path)
                 return
 
+            # --- Vistas con navbar ---
             if path == "/home":
                 self._current_module = "home"
                 self._set_content([HomeContainer()], use_navbar=True)
@@ -236,7 +260,6 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            # ✅ Servicios
             if path in ("/servicios", "/services"):
                 self._current_module = "servicios"
                 self._set_content([ServiciosContainer()], use_navbar=True)
@@ -255,7 +278,6 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            # ✅ Configuración / Settings DB
             if path in ("/configuracion", "/settings", "/settings-db"):
                 self._current_module = "settings"
                 self._set_content([SettingsDBContainer(self._page)], use_navbar=True)
@@ -268,14 +290,19 @@ class WindowMain:
                 self._sync_nav_selection(path)
                 return
 
-            # ✅ NUEVA RUTA: Contabilidad
+            # ✅ Guard de acceso para Contabilidad (solo root)
             if path in ("/contabilidad", "/contable", "/accounting"):
+                if not self._is_root():
+                    print("🚫 [ROUTE] Acceso no autorizado a Contabilidad → redirigiendo a /home")
+                    if self._page:
+                        self._page.go("/home")
+                    return
                 self._current_module = "contabilidad"
                 self._set_content([ContabilidadContainer()], use_navbar=True)
                 self._sync_nav_selection(path)
                 return
 
-            # Ruta no reconocida → redirigir a /home
+            # Ruta no reconocida → /home
             print(f"⚠️ [ROUTE] Ruta no reconocida: {path} → redirigiendo a /home")
             if self._page:
                 self._page.go("/home")
@@ -293,21 +320,19 @@ class WindowMain:
         except Exception as e:
             print(f"⚠️ [NAV] Error sincronizando ruta: {e}")
 
-    # =========================================================
-    # Construcción del layout por vista
-    # =========================================================
+    # ===================== Construcción de layout por vista ===================
     def _set_content(self, controls: list[ft.Control], use_navbar: bool = True):
         print(f"🔧 [SET_CONTENT] Montando vista (use_navbar={use_navbar}, módulo={self._current_module})")
         try:
             app = AppState()
 
             if use_navbar:
-                # 👉 Shell persistente: crea una sola vez y solo cambia el panel derecho
+                # Shell persistente: se crea una vez y solo se refresca el panel derecho
                 self._ensure_shell()
 
                 colors = self.theme_ctrl.get_colors(self._current_module or "home")
                 if self._content_host:
-                    self._content_host.bgcolor = colors.get("BG_COLOR")
+                    self._content_host.bgcolor = self._coerce_color(colors.get("BG_COLOR"), ft.colors.SURFACE)
                     if len(controls) == 1:
                         self._content_host.content = controls[0]
                     else:
@@ -317,7 +342,7 @@ class WindowMain:
                 app.set("nav_container", self.nav_bar)
 
             else:
-                # Vista sin barra (p. ej., login). Podemos “apagar” el shell.
+                # Vista sin barra (login). “Apagamos” el shell visualmente.
                 self._shell_ready = False
                 self._nav_host = None
                 self._content_host = None
@@ -331,7 +356,7 @@ class WindowMain:
                         expand=True,
                     ),
                     expand=True,
-                    bgcolor=content_colors.get("BG_COLOR"),
+                    bgcolor=self._coerce_color(content_colors.get("BG_COLOR"), ft.colors.SURFACE),
                 )
                 app.set("content_container", self.content_area)
                 app.set("nav_container", None)
@@ -351,15 +376,14 @@ class WindowMain:
 
         except Exception as e:
             print(f"❌ [SET_CONTENT] Error crítico al montar vista: {e}")
-            self.content_area.content = ft.Text(f"Error al montar vista: {e}", color=ft.colors.RED_400)
+            if self.content_area:
+                self.content_area.content = ft.Text(f"Error al montar vista: {e}", color=ft.colors.RED_400)
             try:
                 self._page.update()
             except Exception:
                 pass
 
-    # =========================================================
-    # Utilidades
-    # =========================================================
+    # ================================ Miscelánea ==============================
     def _current_route_str(self, fallback: str = "/home") -> str:
         r = (self._page.route if self._page else None) or fallback
         return r.rstrip("/") or "/"

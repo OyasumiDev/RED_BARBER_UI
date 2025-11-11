@@ -1,4 +1,3 @@
-# app/views/containers/home/contabilidad/contabilidad_container.py
 from __future__ import annotations
 import flet as ft
 from datetime import datetime, date, timedelta
@@ -6,7 +5,6 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from app.config.application.app_state import AppState
-from app.config.application.theme_controller import ThemeController
 from app.views.containers.nvar.layout_controller import LayoutController
 
 from app.models.trabajadores_model import TrabajadoresModel
@@ -14,8 +12,10 @@ from app.models.contabilidad_model import NominaModel, GananciasModel
 
 # ------------------------ Utils ------------------------
 def _dec(v: Any, fb: str = "0.00") -> Decimal:
-    try: return Decimal(str(v)).quantize(Decimal("0.01"))
-    except Exception: return Decimal(fb)
+    try:
+        return Decimal(str(v)).quantize(Decimal("0.01"))
+    except Exception:
+        return Decimal(fb)
 
 def _money(v: Any) -> str:
     return f"{_dec(v):,.2f}"
@@ -27,20 +27,29 @@ def _monday(d: date) -> date:
 class ContabilidadContainer(ft.Container):
     """
     Resumen de ganancias por trabajador con acciones de Pago parcial / Pagar todo.
-    Sin DataTable para evitar ciclos de referencia; todo se renderiza en tarjetas simples.
+
+    REGLAS EN UI:
+    - Colores: AppState.get_colors("contabilidad")
+    - NO se recalcula gan_empleado / gan_empresa en el container.
+      Se muestran los valores ya preparados por GananciasModel:
+        * Prioriza snapshots por corte (COM_MONTO / SUC_MONTO).
+        * Si faltan, el propio modelo calcula: emp = total * pct/100 ; empresa = total - emp.
     """
 
     def __init__(self):
         super().__init__(expand=True, padding=10)
 
-        # Estado global
+        # Estado global / layout
         self.app = AppState()
-        self.theme = ThemeController()
         self.layout = LayoutController()
-        self.page = self.app.get_page()
+        try:
+            self.page = self.app.get_page()
+        except Exception:
+            self.page = getattr(self.app, "page", None)
 
-        # Paleta
-        self.colors = self.theme.get_colors("contabilidad")
+        # Paleta desde AppState (no ThemeController)
+        self.colors = self.app.get_colors("contabilidad")
+        print(f"[CONTAB] Paleta 'contabilidad' cargada: keys={len(self.colors)}")
 
         # Permisos
         self.is_root = self._is_root()
@@ -68,6 +77,7 @@ class ContabilidadContainer(ft.Container):
         self._dd_trab: Optional[ft.Dropdown] = None
 
         # Build
+        print("[CONTAB] Inicializando ContabilidadContainer...")
         self._build_ui()
         self._load_and_render()
 
@@ -81,7 +91,9 @@ class ContabilidadContainer(ft.Container):
         username = (sess or {}).get("username", "")
         rol = (rol or "").strip().lower()
         username = (username or "").strip().lower()
-        return rol == "root" or username == "root"
+        val = (rol == "root" or username == "root")
+        print(f"[CONTAB] Permisos → is_root={val}")
+        return val
 
     # ------------------------- UI
     def _build_ui(self):
@@ -105,7 +117,11 @@ class ContabilidadContainer(ft.Container):
         # Dropdown trabajadores activos
         opts = [ft.dropdown.Option("", "Todos")]
         try:
-            trs = self.trab_model.listar(estado=1) or self.trab_model.listar(estado=True) or []
+            # Acepta distintos esquemas (estado=1/True/"activo")
+            trs = (self.trab_model.listar(estado=1)
+                   or self.trab_model.listar(estado=True)
+                   or self.trab_model.listar(estado="activo")
+                   or [])
         except Exception:
             trs = []
         for t in trs:
@@ -113,6 +129,7 @@ class ContabilidadContainer(ft.Container):
             nom = t.get("nombre") or t.get("NOMBRE") or t.get("name") or f"Trabajador {tid}"
             if tid is not None:
                 opts.append(ft.dropdown.Option(str(tid), nom))
+
         self._dd_trab = ft.Dropdown(
             label="Trabajador",
             options=opts, width=220, dense=True,
@@ -133,17 +150,20 @@ class ContabilidadContainer(ft.Container):
         toolbar = ft.ResponsiveRow(
             columns=12, spacing=10, run_spacing=10,
             controls=[
-                ft.Container(self._tf_start, col={"xs":6,"md":3,"lg":2}),
-                ft.Container(self._tf_end,   col={"xs":6,"md":3,"lg":2}),
-                ft.Container(self._dd_trab,  col={"xs":12,"md":4,"lg":3}),
-                ft.Container(btn_aplicar,    col={"xs":6,"md":2,"lg":2}),
+                ft.Container(self._tf_start, col={"xs":6, "md":3, "lg":2}),
+                ft.Container(self._tf_end,   col={"xs":6, "md":3, "lg":2}),
+                ft.Container(self._dd_trab,  col={"xs":12, "md":4, "lg":3}),
+                ft.Container(btn_aplicar,    col={"xs":6, "md":2, "lg":2}),
             ]
         )
 
-        self._totals_host = ft.Container(content=self._totals_panel(), padding=10,
-                                         bgcolor=pal.get("CARD_BG"),
-                                         border=ft.border.all(1, pal.get("BORDER_COLOR")),
-                                         border_radius=8)
+        self._totals_host = ft.Container(
+            content=self._totals_panel(),
+            padding=10,
+            bgcolor=pal.get("CARD_BG"),
+            border=ft.border.all(1, pal.get("BORDER_COLOR")),
+            border_radius=8
+        )
 
         self._list_column = ft.Column([], expand=True, spacing=8)
         self._list_host = ft.Container(content=self._list_column, expand=True)
@@ -168,7 +188,7 @@ class ContabilidadContainer(ft.Container):
         tf.bgcolor = pal.get("FIELD_BG", pal.get("CARD_BG"))
         tf.color = pal.get("FG_COLOR")
         tf.label_style = ft.TextStyle(color=pal.get("FG_COLOR"))
-        tf.hint_style = ft.TextStyle(color=pal.get("FG_COLOR"), size=11)
+        tf.hint_style = ft.TextStyle(color=pal.get("MUTED"), size=11)
         tf.cursor_color = pal.get("FG_COLOR")
         tf.border_color = pal.get("DIVIDER_COLOR")
         tf.focused_border_color = pal.get("FG_COLOR")
@@ -195,29 +215,37 @@ class ContabilidadContainer(ft.Container):
     def _load_and_render(self):
         ini = datetime.combine(self.start_date, datetime.min.time())
         fin = datetime.combine(self.end_date, datetime.max.time())
+        print(f"[CONTAB] Cargando resumen_por_rango(inicio={ini}, fin={fin}, trabajador_id={self.filter_trab})")
         try:
             res = self.gan.resumen_por_rango(inicio=ini, fin=fin, trabajador_id=self.filter_trab)
             self.summary_rows = res.get("rows", [])
             self.summary_totals = res.get("totals", {})
+            print(f"[CONTAB] Resumen listo (sin recomputar): rows={len(self.summary_rows)} totals={self.summary_totals}")
         except Exception as ex:
             self.summary_rows, self.summary_totals = [], {}
             self._snack_error(f"Error cargando resumen: {ex}")
+            print(f"[CONTAB][ERR] resumen_por_rango → {ex}")
 
+        # Pintar UI
         self._totals_host.content = self._totals_panel()
         self._list_column.controls.clear()
         self._list_column.controls.extend(self._build_cards(self.summary_rows))
         self._safe_update()
+        print("[CONTAB] Render completado (valores del modelo).")
 
     # ------------------------- Render helpers
     def _totals_panel(self) -> ft.Control:
         pal = self.colors
         t = self.summary_totals or {}
+
         def _kpi(title: str, value: str) -> ft.Control:
             return ft.Container(
-                col={"xs":6,"md":4,"lg":2},
+                col={"xs": 6, "md": 4, "lg": 2},
                 content=ft.Column(
-                    [ft.Text(title, size=11, color=pal.get("MUTED")),
-                     ft.Text(value, size=16, weight="bold", color=pal.get("FG_COLOR"))],
+                    [
+                        ft.Text(title, size=11, color=pal.get("MUTED")),
+                        ft.Text(value, size=16, weight="bold", color=pal.get("FG_COLOR")),
+                    ],
                     spacing=2,
                 ),
                 bgcolor=pal.get("CARD_BG"),
@@ -250,25 +278,20 @@ class ContabilidadContainer(ft.Container):
             gan_emp = _money(r.get("gan_empleado"))
             gan_neg = _money(r.get("gan_empresa"))
             pagado = _money(r.get("pagado"))
-            pendiente_val = _dec(r.get("pendiente") or 0)
-            pendiente = _money(pendiente_val)
+            pendiente = _money(r.get("pendiente"))
 
-            # Botones sin capturar 'r'
             btn_det = ft.TextButton(
-                "Detalle",
-                on_click=lambda e, _tid=tid: self._open_detail_dialog_by_id(_tid),
+                "Detalle", on_click=lambda e, _tid=tid: self._open_detail_dialog_by_id(_tid),
             )
             btn_pagar = ft.FilledTonalButton(
-                "Pagar",
-                icon=ft.icons.PAYMENTS,
+                "Pagar", icon=ft.icons.PAYMENTS,
                 on_click=lambda e, _tid=tid: self._open_pay_dialog_by_id(_tid),
-                disabled=(pendiente_val <= 0) or not self.is_root,
+                disabled=(r.get("pendiente", 0) <= 0) or not self.is_root,
             )
             btn_pagar_todo = ft.FilledButton(
-                "Pagar todo",
-                icon=ft.icons.ATTACH_MONEY,
+                "Pagar todo", icon=ft.icons.ATTACH_MONEY,
                 on_click=lambda e, _tid=tid: self._confirm_pay_all_dialog_by_id(_tid),
-                disabled=(pendiente_val <= 0) or not self.is_root,
+                disabled=(r.get("pendiente", 0) <= 0) or not self.is_root,
             )
 
             header = ft.Row(
@@ -282,12 +305,12 @@ class ContabilidadContainer(ft.Container):
             grid = ft.ResponsiveRow(
                 columns=12, spacing=6, run_spacing=6,
                 controls=[
-                    ft.Container(ft.Text(f"Cortes: {cortes}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
-                    ft.Container(ft.Text(f"Total: $ {total}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
-                    ft.Container(ft.Text(f"Emp: $ {gan_emp}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
-                    ft.Container(ft.Text(f"Negocio: $ {gan_neg}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
-                    ft.Container(ft.Text(f"Pagado: $ {pagado}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
-                    ft.Container(ft.Text(f"Pendiente: $ {pendiente}", size=12, color=pal.get("FG_COLOR")), col={"xs":6,"md":3,"lg":2}),
+                    ft.Container(ft.Text(f"Cortes: {cortes}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
+                    ft.Container(ft.Text(f"Total: $ {total}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
+                    ft.Container(ft.Text(f"Emp: $ {gan_emp}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
+                    ft.Container(ft.Text(f"Negocio: $ {gan_neg}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
+                    ft.Container(ft.Text(f"Pagado: $ {pagado}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
+                    ft.Container(ft.Text(f"Pendiente: $ {pendiente}", size=12, color=pal.get("FG_COLOR")), col={"xs":6, "md":3, "lg":2}),
                 ],
             )
             card = ft.Container(
@@ -323,12 +346,12 @@ class ContabilidadContainer(ft.Container):
             self._snack_error("No se encontró el trabajador.")
             return
         nombre = r.get("trabajador") or f"Trabajador {trabajador_id}"
-        pendiente = _dec(r.get("pendiente") or 0)
+        pendiente_val = _dec(r.get("pendiente") or 0)
         generado_emp = _dec(r.get("gan_empleado") or 0)
 
         tf_monto = ft.TextField(
             label="Monto a pagar",
-            value=f"{pendiente:.2f}",
+            value=f"{pendiente_val:.2f}",
             keyboard_type=ft.KeyboardType.NUMBER,
             dense=True, width=220, text_size=12,
             text_align=ft.TextAlign.RIGHT,
@@ -340,7 +363,7 @@ class ContabilidadContainer(ft.Container):
         info = ft.Column(
             [
                 ft.Text(f"Generado (empleado): $ {generado_emp:.2f}", size=11, color=pal.get("MUTED")),
-                ft.Text(f"Máximo a pagar (pendiente): $ {pendiente:.2f}", size=11, color=pal.get("MUTED")),
+                ft.Text(f"Máximo a pagar (pendiente): $ {pendiente_val:.2f}", size=11, color=pal.get("MUTED")),
             ],
             spacing=2,
         )
@@ -469,6 +492,7 @@ class ContabilidadContainer(ft.Container):
         except Exception as ex:
             detalle = []
             self._snack_error(f"Error cargando detalle: {ex}")
+            print(f"[CONTAB][ERR] detalle_trabajador → {ex}")
 
         items: List[ft.Control] = []
         if not detalle:
@@ -477,14 +501,19 @@ class ContabilidadContainer(ft.Container):
             for d in detalle:
                 fh = d.get("fecha_hora")
                 fh_txt = str(fh)[:16] if fh else ""
+                total = _dec(d.get("total"))
+                emp = _dec(d.get("gan_empleado"))
+                suc = _dec(d.get("gan_empresa"))
+                pct = _dec(d.get("pct") if d.get("pct") is not None else "0.00")
                 items.append(
                     ft.Row(
                         [
                             ft.Text(fh_txt, size=11, color=pal.get("FG_COLOR")),
                             ft.Container(expand=True),
-                            ft.Text(_money(d.get("total")), size=11, color=pal.get("FG_COLOR")),
-                            ft.Text(" emp: " + _money(d.get("gan_empleado")), size=11, color=pal.get("FG_COLOR")),
-                            ft.Text(" neg: " + _money(d.get("gan_empresa")), size=11, color=pal.get("FG_COLOR")),
+                            ft.Text(_money(total), size=11, color=pal.get("FG_COLOR")),
+                            ft.Text(f" pct: {pct:.2f}%", size=11, color=pal.get("MUTED")),
+                            ft.Text(" emp: " + _money(emp), size=11, color=pal.get("FG_COLOR")),
+                            ft.Text(" neg: " + _money(suc), size=11, color=pal.get("FG_COLOR")),
                         ],
                         alignment=ft.MainAxisAlignment.START, spacing=10,
                     )
@@ -495,7 +524,7 @@ class ContabilidadContainer(ft.Container):
             title=ft.Text("Detalle de cortes", weight="bold", color=pal.get("FG_COLOR")),
             content=ft.Container(
                 content=ft.Column(items, spacing=6, scroll=ft.ScrollMode.AUTO, height=360),
-                width=520,
+                width=560,
             ),
             actions=[ft.TextButton("Cerrar", on_click=lambda e: self._close_dialog(e))],
         )
@@ -505,8 +534,10 @@ class ContabilidadContainer(ft.Container):
 
     # ------------------------- ciclo de vida / utils
     def did_mount(self):
-        self.colors = self.theme.get_colors("contabilidad")
+        # Relee la paleta desde AppState cada vez que se monta
+        self.colors = self.app.get_colors("contabilidad")
         self.bgcolor = self.colors.get("BG_COLOR")
+        print("[CONTAB] did_mount → paleta reaplicada")
         self._safe_update()
 
     def _close_dialog(self, e):
@@ -521,13 +552,16 @@ class ContabilidadContainer(ft.Container):
 
     def _safe_update(self):
         try:
-            if self.page: self.page.update()
-            else: self.update()
+            if self.page:
+                self.page.update()
+            else:
+                self.update()
         except Exception:
             pass
 
     def _snack_ok(self, msg: str):
-        if not self.page: return
+        if not self.page:
+            return
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(msg, color=self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)),
             bgcolor=self.colors.get("CARD_BG"),
@@ -535,7 +569,8 @@ class ContabilidadContainer(ft.Container):
         self.page.snack_bar.open = True
 
     def _snack_error(self, msg: str):
-        if not self.page: return
+        if not self.page:
+            return
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(msg, color=ft.colors.WHITE),
             bgcolor=ft.colors.RED_700,
