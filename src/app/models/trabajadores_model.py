@@ -162,6 +162,15 @@ class TrabajadoresModel:
 
             tel = self._sanitize_phone(telefono)
             mail = self._sanitize_email(email)
+
+            # Validaci?n de comisi?n: [0, 100]
+            try:
+                com_val = 0.0 if comision_porcentaje is None else float(comision_porcentaje)
+            except Exception:
+                return {"status": "error", "message": "Comisi?n inv?lida."}
+            if com_val < 0.0 or com_val > 100.0:
+                return {"status": "error", "message": "La comisi?n debe estar entre 0% y 100%."}
+
             q = f"""
             INSERT INTO {E_TRABAJADORES.TABLE.value}
                 ({E_TRABAJADORES.NOMBRE.value},
@@ -172,7 +181,7 @@ class TrabajadoresModel:
                  {E_TRABAJADORES.ESTADO.value})
             VALUES (%s, %s, %s, %s, %s, %s)
             """
-            self.db.run_query(q, (nombre, tel, mail, tipo, float(comision_porcentaje), estado))
+            self.db.run_query(q, (nombre, tel, mail, tipo, com_val, estado))
             return {"status": "success", "message": "Trabajador creado."}
         except Exception as ex:
             return {"status": "error", "message": str(ex)}
@@ -207,7 +216,14 @@ class TrabajadoresModel:
                 sets.append(f"{E_TRABAJADORES.TIPO.value} = %s"); params.append(tipo)
 
             if comision_porcentaje is not None:
-                sets.append(f"{E_TRABAJADORES.COMISION.value} = %s"); params.append(float(comision_porcentaje))
+                # Validaci?n de comisi?n: [0, 100]
+                try:
+                    com_val = float(comision_porcentaje)
+                except Exception:
+                    return {"status": "error", "message": "Comisi?n inv?lida."}
+                if com_val < 0.0 or com_val > 100.0:
+                    return {"status": "error", "message": "La comisi?n debe estar entre 0% y 100%."}
+                sets.append(f"{E_TRABAJADORES.COMISION.value} = %s"); params.append(com_val)
 
             if estado is not None:
                 if not self._validate_estado(estado):

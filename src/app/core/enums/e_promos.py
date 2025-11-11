@@ -16,6 +16,7 @@ class E_PROMO(str, Enum):
     SERVICIO_ID = "servicio_id"
     TIPO_DESC   = "tipo_descuento"
     VALOR_DESC  = "valor_descuento"
+    PRECIO_FINAL = "precio_final"
     ESTADO      = "estado"
 
     # Ventana de vigencia (opcional)

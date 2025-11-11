@@ -1,9 +1,11 @@
 # app/views/modals/modal_promos_manager.py
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from decimal import Decimal
 
 import flet as ft
+
+HAS_FILTER_CHIP = hasattr(ft, "FilterChip")
 
 from app.config.application.app_state import AppState
 from app.models.servicios_model import ServiciosModel
@@ -33,11 +35,12 @@ class PromosManagerDialog:
     - Eliminar con confirmación
     """
 
-    def __init__(self):
+    def __init__(self, on_after_close: Optional[Callable[[], None]] = None):
         # Core/theme
         self.app_state = AppState()
         self.page = self.app_state.get_page()
         self.colors = self.app_state.get_colors()
+        self._on_after_close = on_after_close
 
         # Models
         self.promos = PromosModel()
@@ -49,7 +52,8 @@ class PromosManagerDialog:
 
         # Datos
         self._rows: List[Dict[str, Any]] = []
-        self._serv_opts: List[Tuple[str, str]] = []  # (id_str, nombre)
+        self._serv_opts: List[Dict[str, Any]] = []  # {"id": str, "nombre": str, "precio": Decimal}
+        self._serv_price_map: Dict[str, Decimal] = {}
 
         # Filtros
         self._search_q: str = ""
@@ -68,10 +72,15 @@ class PromosManagerDialog:
         # Form widgets
         self._tf_nombre: Optional[ft.TextField] = None
         self._sw_activa: Optional[ft.Switch] = None
-        self._chips_days: Dict[str, ft.FilterChip] = {}
+        self._chips_days: Dict[str, ft.Control] = {}
         self._dd_servicio: Optional[ft.Dropdown] = None
-        self._dd_tipo: Optional[ft.Dropdown] = None
         self._tf_valor: Optional[ft.TextField] = None
+        self._txt_precio_servicio: Optional[ft.Text] = None
+        self._txt_precio_final: Optional[ft.Text] = None
+        self._precio_base_actual: Decimal = Decimal("0.00")
+        self._precio_final_actual: Decimal = Decimal("0.00")
+        self._form_container: Optional[ft.Container] = None
+        self._form_visible = False
 
         # Footer acciones
         self._btn_save: Optional[ft.FilledButton] = None
@@ -99,6 +108,8 @@ class PromosManagerDialog:
 
         # Construir dialog
         self._dlg = self._build_dialog()
+        if self._dlg:
+            self._dlg.on_dismiss = self._handle_dismiss
         self.page.dialog = self._dlg
         self._dlg.open = True
         self._mounted = True
@@ -120,7 +131,7 @@ class PromosManagerDialog:
         if self._tf_valor:
             self._apply_tf_palette(self._tf_valor)
         # Dropdowns
-        for dd in (self._dd_estado, self._dd_day, self._dd_servicio, self._dd_tipo):
+        for dd in (self._dd_estado, self._dd_day, self._dd_servicio):
             if dd:
                 dd.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR"), size=12)
 
@@ -132,9 +143,89 @@ class PromosManagerDialog:
         tf.border_color = self.colors.get("DIVIDER_COLOR", ft.colors.OUTLINE_VARIANT)
         tf.focused_border_color = self.colors.get("FG_COLOR", ft.colors.ON_SURFACE)
 
+    def _dialog_width(self) -> int:
+        win = self.app_state.window_width or (getattr(self.page, "window_width", None)) or 1024
+        try:
+            win_int = int(win)
+        except Exception:
+            win_int = 1024
+        return max(520, min(760, win_int - 120))
+
+    def _get_servicio_precio(self, servicio_id: Optional[str]) -> Decimal:
+        if not servicio_id:
+            return Decimal("0.00")
+        cached = self._serv_price_map.get(servicio_id)
+        if cached is not None:
+            return cached
+        try:
+            data = self.servicios.get_by_id(int(servicio_id))
+        except Exception:
+            data = None
+        if data:
+            precio = Decimal(str(data.get("precio_base") or data.get("PRECIO_BASE") or 0)).quantize(Decimal("0.01"))
+            self._serv_price_map[servicio_id] = precio
+            return precio
+        return Decimal("0.00")
+
+    def _update_precio_preview(self):
+        servicio_id = self._dd_servicio.value if self._dd_servicio else None
+        base = self._get_servicio_precio(servicio_id)
+        val_txt = (self._tf_valor.value or "").strip() if self._tf_valor else "0"
+        val_txt = val_txt.replace(",", ".")
+        try:
+            desc = _to_decimal(val_txt)
+        except Exception:
+            desc = Decimal("0.00")
+        if desc < Decimal("0.00"):
+            desc = Decimal("0.00")
+        if desc > base:
+            desc = base
+        final = (base - desc).quantize(Decimal("0.01"))
+        self._precio_base_actual = base
+        self._precio_final_actual = final
+        if self._txt_precio_servicio:
+            self._txt_precio_servicio.value = f"Servicio: ${base:.2f}"
+        if self._txt_precio_final:
+            self._txt_precio_final.value = f"Total con promo: ${final:.2f}"
+        if self.page:
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+    def _on_servicio_change(self):
+        self._update_precio_preview()
+
+    def _on_valor_change(self):
+        self._update_precio_preview()
+
+    def _set_day_chip_state(self, chip: ft.Control, value: bool) -> None:
+        if hasattr(chip, "selected"):
+            chip.selected = value  # type: ignore[attr-defined]
+        else:
+            setattr(chip, "value", value)
+
+    def _get_day_chip_state(self, chip: ft.Control) -> bool:
+        if hasattr(chip, "selected"):
+            return bool(getattr(chip, "selected"))
+        return bool(getattr(chip, "value", False))
+
+    def _set_form_visible(self, visible: bool):
+        self._form_visible = visible
+        if self._form_container:
+            self._form_container.visible = visible
+        if not visible:
+            self._editing_id = None
+        if self.page:
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
     # ---------------------- Data ----------------------
     def _load_servicios_opts(self):
         self._serv_opts.clear()
+        self._serv_price_map = {}
         try:
             lista = self.servicios.listar(activo=True) or []
         except Exception:
@@ -142,8 +233,12 @@ class PromosManagerDialog:
         for s in lista:
             sid = s.get("id") or s.get("ID") or s.get("id_servicio")
             nom = s.get("nombre") or s.get("NOMBRE") or f"Servicio {sid}"
+            precio = s.get("precio_base") or s.get("PRECIO_BASE") or s.get("precio")
             if sid is not None:
-                self._serv_opts.append((str(int(sid)), str(nom)))
+                sid_str = str(int(sid))
+                precio_dec = Decimal(str(precio or "0")).quantize(Decimal("0.01"))
+                self._serv_opts.append({"id": sid_str, "nombre": str(nom), "precio": precio_dec})
+                self._serv_price_map[sid_str] = precio_dec
 
     def _refresh_rows(self):
         # Filtro estado → activa: True/False/None
@@ -179,7 +274,7 @@ class PromosManagerDialog:
         form = self._build_form()
 
         content = ft.Container(
-            width=860,
+            width=self._dialog_width(),
             padding=12,
             bgcolor=self.colors.get("BG_COLOR"),
             content=ft.Column(
@@ -289,11 +384,12 @@ class PromosManagerDialog:
             spacing=8,
             controls=[
                 ft.Container(width=64, content=ft.Text("Activa", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
-                ft.Container(expand=True, content=ft.Text("Promoción", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
-                ft.Container(width=180, content=ft.Text("Días", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
-                ft.Container(width=220, content=ft.Text("Servicio", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
-                ft.Container(width=110, content=ft.Text("Descuento", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
-                ft.Container(width=120, content=ft.Text("Acciones", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(expand=2, content=ft.Text("Promoción", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(width=130, content=ft.Text("Días", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(expand=2, content=ft.Text("Servicio", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(width=90, content=ft.Text("Descuento", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(width=80, content=ft.Text("Final $", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
+                ft.Container(width=90, content=ft.Text("Acciones", size=12, weight=ft.FontWeight.W_500, color=self.colors.get("FG_COLOR"))),
             ],
         )
         self._list_container.controls.append(header)
@@ -319,6 +415,7 @@ class PromosManagerDialog:
         serv_txt = ft.Text(serv_label or "—", size=12, color=self.colors.get("FG_COLOR"))
 
         desc_txt = ft.Text(self._format_descuento(r), size=12, color=self.colors.get("FG_COLOR"))
+        final_txt = ft.Text(self._format_precio_final(r), size=12, color=self.colors.get("FG_COLOR"))
 
         btn_edit = ft.IconButton(ft.icons.EDIT, tooltip="Editar", icon_size=16,
                                  on_click=lambda e, _rid=rid: self._start_edit(_rid))
@@ -330,11 +427,12 @@ class PromosManagerDialog:
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Container(width=64, content=sw),
-                ft.Container(expand=True, content=nombre),
-                ft.Container(width=180, content=dias_txt),
-                ft.Container(width=220, content=serv_txt),
-                ft.Container(width=110, content=desc_txt),
-                ft.Container(width=120, content=ft.Row([btn_edit, btn_del], spacing=4)),
+                ft.Container(expand=2, content=nombre),
+                ft.Container(width=130, content=dias_txt),
+                ft.Container(expand=2, content=serv_txt),
+                ft.Container(width=90, content=desc_txt),
+                ft.Container(width=80, content=final_txt),
+                ft.Container(width=90, content=ft.Row([btn_edit, btn_del], spacing=4)),
             ],
         )
 
@@ -362,9 +460,12 @@ class PromosManagerDialog:
             ("DOM", "Dom", E_PROMO.DOM.value),
         ]
         self._chips_days = {}
-        chips_row = []
+        chips_row: List[ft.Control] = []
         for key, label, _col in days:
-            chip = ft.FilterChip(label=label, selected=False, dense=True)
+            if HAS_FILTER_CHIP:
+                chip = ft.FilterChip(label=label, selected=False, dense=True)  # type: ignore[attr-defined]
+            else:
+                chip = ft.Checkbox(label=label, value=False, scale=0.9)
             self._chips_days[key] = chip
             chips_row.append(chip)
 
@@ -372,39 +473,40 @@ class PromosManagerDialog:
         self._dd_servicio = ft.Dropdown(
             label="Servicio",
             width=320,
-            options=[ft.dropdown.Option(idstr, name) for idstr, name in self._serv_opts],
+            options=[ft.dropdown.Option(opt["id"], opt["nombre"]) for opt in self._serv_opts],
             dense=True,
+            on_change=lambda e: self._on_servicio_change(),
         )
         self._dd_servicio.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR"), size=12)
 
-        # Tipo y valor
-        self._dd_tipo = ft.Dropdown(
-            label="Tipo de descuento",
-            width=180,
-            options=[
-                ft.dropdown.Option(E_PROMO_TIPO.PORCENTAJE.value, "Porcentaje"),
-                ft.dropdown.Option(E_PROMO_TIPO.MONTO.value, "Monto fijo"),
-            ],
-            value=E_PROMO_TIPO.PORCENTAJE.value,
-            dense=True,
-        )
-        self._dd_tipo.text_style = ft.TextStyle(color=self.colors.get("FG_COLOR"), size=12)
-
+        # Valor fijo
         self._tf_valor = ft.TextField(
-            label="Valor",
-            hint_text="Ej. 50 (para 50%) o 20.00 (monto)",
+            label="Descuento fijo ($)",
+            hint_text="Monto a restar (ej. 20.00)",
             height=40,
             text_size=12,
             width=160,
             keyboard_type=ft.KeyboardType.NUMBER,
+            on_change=lambda e: self._on_valor_change(),
         )
         self._apply_tf_palette(self._tf_valor)
+
+        self._txt_precio_servicio = ft.Text(
+            "Servicio: $0.00",
+            size=11,
+            color=self.colors.get("FG_COLOR"),
+        )
+        self._txt_precio_final = ft.Text(
+            "Total con promo: $0.00",
+            size=11,
+            color=self.colors.get("FG_COLOR"),
+        )
 
         # Acciones
         self._btn_save = ft.FilledButton("Guardar", icon=ft.icons.SAVE, on_click=lambda e: self._save())
         self._btn_cancel = ft.TextButton("Cancelar edición", on_click=lambda e: self._cancel_edit())
 
-        form = ft.Column(
+        column = ft.Column(
             spacing=8,
             controls=[
                 ft.Row(
@@ -418,11 +520,26 @@ class PromosManagerDialog:
                 ),
                 ft.Row(spacing=10, controls=[self._tf_nombre]),
                 ft.Row(spacing=8, controls=[ft.Text("Días:", size=12, color=self.colors.get("FG_COLOR"))] + chips_row),
-                ft.Row(spacing=10, controls=[self._dd_servicio, self._dd_tipo, self._tf_valor]),
+                ft.Row(spacing=10, controls=[self._dd_servicio, self._tf_valor]),
+                ft.Row(
+                    spacing=16,
+                    controls=[
+                        self._txt_precio_servicio,
+                        self._txt_precio_final,
+                    ],
+                ),
+
                 ft.Row(spacing=8, controls=[self._btn_cancel, self._btn_save]),
             ],
         )
-        return form
+        self._form_container = ft.Container(
+            visible=self._form_visible,
+            animate_opacity=200,
+            animate_size=200,
+            content=column,
+        )
+        self._update_precio_preview()
+        return self._form_container
 
     # ---------------------- Interacciones toolbar ----------------------
     def _on_search_change(self):
@@ -475,7 +592,7 @@ class PromosManagerDialog:
         row = self.promos.get_by_id(int(promo_id)) or {}
         self._editing_id = int(promo_id)
         self._fill_form_from_row(row)
-        self.page.update()
+        self._set_form_visible(True)
 
     def _confirm_delete(self, promo_id: int):
         dlg = ft.AlertDialog(
@@ -518,16 +635,16 @@ class PromosManagerDialog:
     def _on_new(self):
         self._editing_id = None
         self._clear_form()
-        self.page.update()
+        self._set_form_visible(True)
 
     def _clear_form(self):
         if self._tf_nombre: self._tf_nombre.value = ""
         if self._sw_activa: self._sw_activa.value = True
         for chip in self._chips_days.values():
-            chip.selected = False
+            self._set_day_chip_state(chip, False)
         if self._dd_servicio: self._dd_servicio.value = None
-        if self._dd_tipo: self._dd_tipo.value = E_PROMO_TIPO.PORCENTAJE.value
         if self._tf_valor: self._tf_valor.value = ""
+        self._update_precio_preview()
 
     def _fill_form_from_row(self, r: Dict[str, Any]):
         if self._tf_nombre: self._tf_nombre.value = r.get(E_PROMO.NOMBRE.value) or ""
@@ -543,7 +660,7 @@ class PromosManagerDialog:
         }
         for key, col in days_map.items():
             if key in self._chips_days:
-                self._chips_days[key].selected = _b(col)
+                self._set_day_chip_state(self._chips_days[key], _b(col))
 
         # Servicio
         sid = r.get(E_PROMO.SERVICIO_ID.value)
@@ -551,11 +668,9 @@ class PromosManagerDialog:
             self._dd_servicio.value = str(int(sid))
 
         # Tipo/Valor
-        if self._dd_tipo:
-            v = r.get(E_PROMO.TIPO_DESC.value) or E_PROMO_TIPO.PORCENTAJE.value
-            self._dd_tipo.value = v
         if self._tf_valor:
             self._tf_valor.value = _txt(r.get(E_PROMO.VALOR_DESC.value))
+        self._update_precio_preview()
 
     def _collect_form(self) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         nombre = (self._tf_nombre.value or "").strip() if self._tf_nombre else ""
@@ -570,7 +685,10 @@ class PromosManagerDialog:
             "JUE": E_PROMO.JUE.value, "VIE": E_PROMO.VIE.value, "SAB": E_PROMO.SAB.value,
             "DOM": E_PROMO.DOM.value,
         }
-        dias_values = {col: 1 if self._chips_days[key].selected else 0 for key, col in days_map.items()}
+        dias_values = {
+            col: 1 if self._get_day_chip_state(self._chips_days[key]) else 0
+            for key, col in days_map.items()
+        }
         if sum(dias_values.values()) <= 0:
             return None, "Selecciona al menos un día."
 
@@ -579,20 +697,22 @@ class PromosManagerDialog:
         try:
             servicio_id = int(self._dd_servicio.value)
         except Exception:
-            return None, "Servicio inválido."
+            return None, "Servicio inv?lido."
 
-        tipo_desc = self._dd_tipo.value if self._dd_tipo else E_PROMO_TIPO.PORCENTAJE.value
-        val_txt = (self._tf_valor.value or "").strip() if self._tf_valor else "0"
+        tipo_desc = E_PROMO_TIPO.MONTO.value
+        val_txt = (self._tf_valor.value or '').strip() if self._tf_valor else '0'
+        val_txt = val_txt.replace(',', '.')
         try:
             val_dec = _to_decimal(val_txt)
         except Exception:
-            return None, "Valor de descuento inválido."
-        if tipo_desc == E_PROMO_TIPO.PORCENTAJE.value:
-            if val_dec <= 0 or val_dec > 100:
-                return None, "Porcentaje debe ser > 0 y ≤ 100."
-        else:
-            if val_dec < 0:
-                return None, "Monto fijo debe ser ≥ 0."
+            return None, "Valor de descuento inv?lido."
+        if val_dec < 0:
+            return None, "Monto fijo debe ser ? 0."
+
+        precio_base = self._get_servicio_precio(str(self._dd_servicio.value))
+        if val_dec > precio_base:
+            return None, f"El descuento (${val_dec:.2f}) no puede superar el precio del servicio (${precio_base:.2f})."
+        precio_final = (precio_base - val_dec).quantize(Decimal('0.01'))
 
         # Usuario (auditoría)
         uid = None
@@ -608,6 +728,7 @@ class PromosManagerDialog:
             E_PROMO.SERVICIO_ID.value: servicio_id,
             E_PROMO.TIPO_DESC.value: tipo_desc,
             E_PROMO.VALOR_DESC.value: float(val_dec),
+            E_PROMO.PRECIO_FINAL.value: float(precio_final),
             # fechas/hora opcionales → no usadas en este formulario (se envían nulas)
             E_PROMO.FECHA_INI.value: None,
             E_PROMO.FECHA_FIN.value: None,
@@ -634,6 +755,7 @@ class PromosManagerDialog:
                 servicio_id=data[E_PROMO.SERVICIO_ID.value],
                 tipo_descuento=data[E_PROMO.TIPO_DESC.value],
                 valor_descuento=data[E_PROMO.VALOR_DESC.value],
+                precio_final=data[E_PROMO.PRECIO_FINAL.value],
                 estado=data[E_PROMO.ESTADO.value],
                 fecha_inicio=None, fecha_fin=None,
                 aplica_lunes=data[E_PROMO.LUN.value],
@@ -656,6 +778,7 @@ class PromosManagerDialog:
             self._snack_ok("✅ Promoción guardada.")
             self._editing_id = None
             self._clear_form()
+            self._set_form_visible(False)
             self._refresh_rows()
             self._rebuild_list()
             self.page.update()
@@ -665,15 +788,35 @@ class PromosManagerDialog:
     def _cancel_edit(self):
         self._editing_id = None
         self._clear_form()
-        self.page.update()
+        self._set_form_visible(False)
 
     # ---------------------- Helpers UI ----------------------
     def _format_descuento(self, r: Dict[str, Any]) -> str:
         tipo = (r.get(E_PROMO.TIPO_DESC.value) or "").lower()
         val = _to_decimal(r.get(E_PROMO.VALOR_DESC.value) or 0)
         if tipo == E_PROMO_TIPO.PORCENTAJE.value:
-            return f"-{val.normalize()}%"
+            pct_txt = format(val.normalize(), "f").rstrip("0").rstrip(".")
+            pct_txt = pct_txt or "0"
+            return f"-{pct_txt}%"
         return f"-${val:.2f}"
+
+    def _format_precio_final(self, r: Dict[str, Any]) -> str:
+        final_val = r.get(E_PROMO.PRECIO_FINAL.value)
+        final_dec: Optional[Decimal] = None
+        if final_val is not None:
+            try:
+                final_dec = Decimal(str(final_val)).quantize(Decimal("0.01"))
+            except Exception:
+                final_dec = None
+        if final_dec is None:
+            base = self._get_servicio_precio(str(r.get(E_PROMO.SERVICIO_ID.value) or ""))
+            desc = _to_decimal(r.get(E_PROMO.VALOR_DESC.value) or 0)
+            if desc > base:
+                desc = base
+            final_dec = (base - desc).quantize(Decimal("0.01"))
+        if final_dec < Decimal("0.00"):
+            final_dec = Decimal("0.00")
+        return f"${final_dec:.2f}"
 
     def _dias_to_str(self, r: Dict[str, Any]) -> str:
         parts = []
@@ -691,14 +834,20 @@ class PromosManagerDialog:
         if not sid_str:
             return ""
         # Buscar en cache local
-        for _id, name in self._serv_opts:
-            if _id == sid_str:
-                return name
-        # Si no está, refrescar servicios (pudo activarse después)
-        self._load_servicios_opts()
-        for _id, name in self._serv_opts:
-            if _id == sid_str:
-                return name
+        for opt in self._serv_opts:
+            if opt['id'] == sid_str:
+                return opt['nombre']
+        # Intentar obtenerlo directamente si no est? en cache
+        try:
+            data = self.servicios.get_by_id(int(sid_str))
+        except Exception:
+            data = None
+        if data:
+            nombre = data.get('nombre') or data.get('NOMBRE') or f'Servicio {sid_str}'
+            precio = Decimal(str(data.get('precio_base') or data.get('PRECIO_BASE') or 0)).quantize(Decimal('0.01'))
+            self._serv_opts.append({'id': sid_str, 'nombre': nombre, 'precio': precio})
+            self._serv_price_map[sid_str] = precio
+            return nombre
         return f"Servicio {sid_str}"
 
     # ---------------------- Close & feedback ----------------------
@@ -710,6 +859,17 @@ class PromosManagerDialog:
             self.page.update()
         except Exception:
             pass
+        self._handle_dismiss()
+
+    def _handle_dismiss(self, _=None):
+        if not self._mounted:
+            return
+        self._mounted = False
+        if self._on_after_close:
+            try:
+                self._on_after_close()
+            except Exception:
+                pass
 
     def _snack_ok(self, msg: str):
         self.page.snack_bar = ft.SnackBar(

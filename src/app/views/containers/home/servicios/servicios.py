@@ -154,7 +154,7 @@ class ServiciosContainer(ft.UserControl):
             tf_label_size=11,
             tf_pad_h=8,
             tf_pad_v=4,
-            icon_btn=18,
+            icon_btn=25,
             w_buscar=260,
             w_id=140,
             table_max_w=900,

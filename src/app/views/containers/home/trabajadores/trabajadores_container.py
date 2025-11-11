@@ -482,7 +482,10 @@ class TrabajadoresContainer(ft.Container):
 
         tf = ft.TextField(
             value=_f2(value) if value is not None and not row.get("_is_new") else "",
-            hint_text="Comisión %",
+            hint_text="0 - 100 %",
+            suffix_text="%",
+            max_length=6,
+            text_align=ft.TextAlign.END,
             keyboard_type=ft.KeyboardType.NUMBER,
             text_size=12,
             content_padding=ft.padding.symmetric(horizontal=8, vertical=6),
@@ -490,8 +493,12 @@ class TrabajadoresContainer(ft.Container):
         self._apply_textfield_palette(tf)
         def validar(_):
             try:
-                v = float(tf.value)
-                tf.border_color = None if v >= 0 else ft.colors.RED
+                raw = (tf.value or "").strip()
+                if not raw:
+                    tf.border_color = None
+                else:
+                    v = float(raw.replace(",", "."))
+                    tf.border_color = None if 0.0 <= v <= 100.0 else ft.colors.RED
             except Exception:
                 tf.border_color = ft.colors.RED
             if self.page: self.page.update()
@@ -609,13 +616,16 @@ class TrabajadoresContainer(ft.Container):
             if nombre_tf: nombre_tf.border_color = ft.colors.RED
             errores.append("Nombre inválido")
 
+        com_val = 0.0
         try:
-            com_val = float(com_tf.value) if com_tf else 0.0
-            if com_val < 0:
+            raw_com = (com_tf.value or "").strip() if com_tf else ""
+            com_val = float((raw_com or "0").replace(",", "."))
+            if com_val < 0 or com_val > 100:
                 raise ValueError
         except Exception:
-            if com_tf: com_tf.border_color = ft.colors.RED
-            errores.append("Comisión inválida")
+            if com_tf:
+                com_tf.border_color = ft.colors.RED
+            errores.append("Comisión inválida (0% - 100%)")
 
         if self.page: self.page.update()
         if errores:

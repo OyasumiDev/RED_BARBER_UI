@@ -215,7 +215,7 @@ class DatabaseMysql:
     """
     Capa de acceso a datos MySQL robusta y reutilizable.
 
-    ✔ API compatible:
+    [OK] API compatible:
         - run_query, get_data, get_data_list, execute_procedure, call_procedure,
           get_last_insert_id, is_empty, exportar_base_datos, importar_base_datos
         - Atributos: .database, .connection (MySQLConnection)
@@ -268,9 +268,9 @@ class DatabaseMysql:
                 autocommit=False,
             )
             if self.connection and self.connection.is_connected():
-                print("✅ Conexión exitosa a la base de datos")
+                print("[OK] Conexión exitosa a la base de datos")
         except Error as e:
-            print(f"❌ Error al conectar: {e}")
+            print(f"[ERROR] Error al conectar: {e}")
             self.connection = None
 
     def disconnect(self) -> None:
@@ -278,7 +278,7 @@ class DatabaseMysql:
         if self.connection:
             try:
                 self.connection.close()
-                print("ℹ️ Conexión cerrada a la base de datos")
+                print("[INFO] Conexión cerrada a la base de datos")
             except Exception:
                 pass
             finally:
@@ -355,7 +355,7 @@ class DatabaseMysql:
             cur.close()
             tmp.close()
         except Error as e:
-            print(f"❌ Error al verificar/crear BD: {e}")
+            print(f"[ERROR] Error al verificar/crear BD: {e}")
         return created
 
     # -------------------------
@@ -374,7 +374,7 @@ class DatabaseMysql:
                 self.connection.rollback()
             except Exception:
                 pass
-            print(f"❌ Error ejecutando query: {e}\nSQL: {query}\nParams: {params}")
+            print(f"[ERROR] Error ejecutando query: {e}\nSQL: {query}\nParams: {params}")
             raise
 
     def run_many(self, query: str, seq_params: Iterable[Params]) -> int:
@@ -393,7 +393,7 @@ class DatabaseMysql:
                 self.connection.rollback()
             except Exception:
                 pass
-            print(f"❌ Error en run_many: {e}\nSQL: {query}")
+            print(f"[ERROR] Error en run_many: {e}\nSQL: {query}")
             raise
 
     @contextmanager
@@ -436,7 +436,7 @@ class DatabaseMysql:
                 row = cursor.fetchone()
                 return row if row is not None else ({} if dictionary else None)
         except Exception as e:
-            print(f"❌ Error en get_data: {e}\nSQL: {query}\nParams: {params}")
+            print(f"[ERROR] Error en get_data: {e}\nSQL: {query}\nParams: {params}")
             return {} if dictionary else ()
 
     def get_data_list(
@@ -448,7 +448,7 @@ class DatabaseMysql:
                 result = cursor.fetchall()
                 return result or []
         except Exception as e:
-            print(f"❌ Error en get_data_list: {e}\nSQL: {query}\nParams: {params}")
+            print(f"[ERROR] Error en get_data_list: {e}\nSQL: {query}\nParams: {params}")
             return []
 
     def fetch_scalar(self, query: str, params: Params = ()) -> Any:
@@ -478,7 +478,7 @@ class DatabaseMysql:
             finally:
                 cursor.close()
         except Exception as ex:
-            print(f"❌ Error ejecutando SP '{procedure_name}': {ex}")
+            print(f"[ERROR] Error ejecutando SP '{procedure_name}': {ex}")
             return []
 
     def call_procedure(self, procedure_name: str, params: Params = ()) -> List[DictRow]:
@@ -491,7 +491,7 @@ class DatabaseMysql:
                 return int(row[0])  # type: ignore[arg-type]
             return None
         except Exception as e:
-            print(f"❌ Error al obtener el último ID insertado: {e}")
+            print(f"[ERROR] Error al obtener el último ID insertado: {e}")
             return None
 
     # -------------------------
@@ -556,18 +556,18 @@ class DatabaseMysql:
             if not _path_in_env(dump_dir):
                 sep = ";" if os.name == "nt" else ":"
                 os.environ["PATH"] = str(dump_dir) + sep + os.environ.get("PATH", "")
-            print(f"[DB] mysqldump → {dump_path}")
+            print(f"[DB] mysqldump -> {dump_path}")
         else:
-            print("[DB] ⚠️ mysqldump no localizado en PATH ni rutas conocidas.")
+            print("[DB] [WARN] mysqldump no localizado en PATH ni rutas conocidas.")
 
         if cli_path:
             cli_dir = Path(cli_path).resolve().parent
             if not _path_in_env(cli_dir):
                 sep = ";" if os.name == "nt" else ":"
                 os.environ["PATH"] = str(cli_dir) + sep + os.environ.get("PATH", "")
-            print(f"[DB] mysql cli → {cli_path}")
+            print(f"[DB] mysql cli -> {cli_path}")
         else:
-            print("[DB] ⚠️ mysql (cliente) no localizado en PATH ni rutas conocidas.")
+            print("[DB] [WARN] mysql (cliente) no localizado en PATH ni rutas conocidas.")
 
         # Info final
         print(f"[DB] PATH actualizado para proceso (longitud {len(os.environ.get('PATH',''))}).")
@@ -591,18 +591,18 @@ class DatabaseMysql:
             except Exception:
                 print(f"[SettingsDB] {msg}")
 
-        slog(f"Export solicitado → {ruta_destino} (insert_mode={insert_mode})")
+        slog(f"Export solicitado -> {ruta_destino} (insert_mode={insert_mode})")
         res = self.maintenance.export_db(ruta_destino, insert_mode=insert_mode)
 
         if res.get("status") == "success":
             path = res.get("path")
             ms = res.get("elapsed_ms")
-            slog(f"✅ Export OK → {path}  ({ms} ms)")
+            slog(f"[OK] Export OK -> {path}  ({ms} ms)")
             return True
 
         err = res.get("message") or res.get("stderr_tail") or "desconocido"
         code = res.get("code")
-        slog(f"❌ Export ERROR (code={code}): {err}")
+        slog(f"[ERROR] Export ERROR (code={code}): {err}")
         return False
 
 
@@ -616,7 +616,7 @@ class DatabaseMysql:
         """
         Importa un .sql en la DB actual.
         mode: "standard" | "skip_duplicates" | "overwrite"
-        recreate_schema=True → DROP+CREATE antes de importar.
+        recreate_schema=True -> DROP+CREATE antes de importar.
         """
         def slog(msg: str):
             try:
@@ -630,13 +630,13 @@ class DatabaseMysql:
 
         if res.get("status") == "success":
             ms = res.get("elapsed_ms")
-            slog(f"✅ Import OK  ({ms} ms)")
+            slog(f"[OK] Import OK  ({ms} ms)")
             # Nada de UI aquí; el contenedor Settings muestra el modal en su callback.
             return True
 
         err = res.get("message") or res.get("stderr_tail") or res.get("stdout_tail") or "desconocido"
         code = res.get("code")
-        slog(f"❌ Import ERROR (code={code}): {err}")
+        slog(f"[ERROR] Import ERROR (code={code}): {err}")
         return False
 
 
@@ -655,11 +655,11 @@ class DatabaseMysql:
         res = self.maintenance.drop_database(force_reconnect=True, bootstrap_cb=bootstrap_cb)
 
         if res.get("status") == "success":
-            slog("🗑️ DB eliminada y reconectada correctamente.")
+            slog("🗑 DB eliminada y reconectada correctamente.")
             return True
 
         err = res.get("message") or res.get("stderr_tail") or "desconocido"
-        slog(f"❌ Drop ERROR: {err}")
+        slog(f"[ERROR] Drop ERROR: {err}")
         return False
 
 
@@ -675,7 +675,7 @@ class DatabaseMysql:
                 rows = cursor.fetchall()
                 return rows or []
         except Exception as e:
-            print(f"❌ Error en get_all: {e}\nSQL: {query}\nParams: {params}")
+            print(f"[ERROR] Error en get_all: {e}\nSQL: {query}\nParams: {params}")
             return []
 
     def get_one(
@@ -687,7 +687,7 @@ class DatabaseMysql:
                 row = cursor.fetchone()
                 return row if row is not None else None
         except Exception as e:
-            print(f"❌ Error en get_one: {e}\nSQL: {query}\nParams: {params}")
+            print(f"[ERROR] Error en get_one: {e}\nSQL: {query}\nParams: {params}")
             return None
 
     def fetch_all(

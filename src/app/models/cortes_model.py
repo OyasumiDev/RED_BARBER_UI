@@ -15,7 +15,6 @@ from app.core.enums.e_promos import E_PROMO, E_PROMO_TIPO      # promos         
 
 # Models para cálculos integrados
 from app.models.servicios_model import ServiciosModel  # precio_base / monto_libre  :contentReference[oaicite:19]{index=19}
-from app.models.trabajadores_model import TrabajadoresModel     # comision_porcentaje  :contentReference[oaicite:20]{index=20}
 from app.models.agenda_model import AgendaModel                  # actualizar_cita(...estado=COMPLETADA)  :contentReference[oaicite:21]{index=21}
 from app.models.promos_model import PromosModel                  # find_applicable() / aplicar_descuento()  :contentReference[oaicite:22]{index=22}
 
@@ -26,14 +25,13 @@ class CortesModel:
     - FK opcional a agenda (para cortes agendados) -> al crear, se marca la cita como COMPLETADA.
     - FK opcional a servicio (o monto libre si el servicio lo permite).
     - FK opcional a promo aplicada.
-    - Cálculo de descuento y comisión (snapshot).
+    - Cálculo de descuento contra precio base del servicio o monto libre.
     """
 
     def __init__(self) -> None:
         self.db = DatabaseMysql()
         self._ensure_schema()
         self.servicios = ServiciosModel()
-        self.trabajos  = TrabajadoresModel()
         self.agenda    = AgendaModel()
         self.promos    = PromosModel()
 
@@ -99,50 +97,65 @@ class CortesModel:
             self.db.run_query(f"CREATE INDEX {name} ON {E_CORTE.TABLE.value} ({col})")
 
     # ===================== Lógica de cálculo =====================
-    def _calcular_precios_y_comision(
+    def _calcular_totales(
         self,
         *,
         servicio_row: Optional[Dict],
-        trabajador_id: int,
         dt: datetime,
         aplicar_promo: bool,
         precio_base_manual: Optional[float] = None
-    ) -> Tuple[Decimal, Decimal, Decimal, Optional[int], Decimal, Decimal]:
-        """
-        Devuelve:
-        (precio_base, descuento, total, promo_id, comision_pct, comision_monto)
-        """
+    ) -> Tuple[Decimal, Decimal, Decimal, Optional[int]]:
+        """Devuelve (precio_base, descuento, total, promo_id)."""
         # 1) precio base
-        if servicio_row:
-            is_libre = bool(servicio_row.get("monto_libre", 0))
-            base = Decimal(str(
-                precio_base_manual if (is_libre and precio_base_manual is not None)
-                else (servicio_row.get("precio_base") or 0)
-            ))
+        manual_override = None
+        if precio_base_manual is not None:
+            try:
+                manual_override = Decimal(str(precio_base_manual))
+            except Exception:
+                manual_override = None
+
+        if manual_override is not None:
+            base = manual_override
+        elif servicio_row:
+            fallback = servicio_row.get("precio_base") or servicio_row.get("precio") or 0
+            base = Decimal(str(fallback))
         else:
             # sin servicio => requiere precio manual
             base = Decimal(str(precio_base_manual or 0))
 
+        precio_base_val = base.quantize(Decimal("0.01"))
+
         # 2) promo (si aplica)
         promo_id = None
         descuento = Decimal("0.00")
-        if aplicar_promo and servicio_row and servicio_row.get("id"):
-            pr = self.promos.find_applicable(int(servicio_row["id"]), dt)  # :contentReference[oaicite:23]{index=23}
+        srv_id_lookup = self._extract_servicio_id(servicio_row)
+        if aplicar_promo and srv_id_lookup:
+            pr = self.promos.find_applicable(int(srv_id_lookup), dt)  # :contentReference[oaicite:23]{index=23}
             if pr:
-                # misma función que tu modelo de promos para cálculo exacto
                 total_sugerido, desc = self.promos.aplicar_descuento(precio_base=base, promo_row=pr)  # :contentReference[oaicite:24]{index=24}
-                descuento = desc
-                base = (base - descuento).quantize(Decimal("0.01"))
+                descuento = Decimal(str(desc)).quantize(Decimal("0.01"))
+                total = Decimal(str(total_sugerido)).quantize(Decimal("0.01"))
                 promo_id = pr.get("id")
+            else:
+                total = precio_base_val
+        else:
+            total = precio_base_val
 
-        total = base.quantize(Decimal("0.01"))
+        return (precio_base_val, descuento, total, promo_id)
 
-        # 3) comisión (snapshot)
-        trab = self.trabajos.get_by_id(trabajador_id) or {}  # :contentReference[oaicite:25]{index=25}
-        pct = Decimal(str(trab.get("comision_porcentaje", 0)))
-        com = (total * pct / Decimal("100")).quantize(Decimal("0.01"))
-
-        return (total + descuento, descuento, total, promo_id, pct, com)
+    @staticmethod
+    def _extract_servicio_id(servicio_row: Optional[Dict]) -> Optional[int]:
+        if not servicio_row:
+            return None
+        for key in ("id", "ID", "id_servicio", "ID_SERVICIO"):
+            val = servicio_row.get(key)
+            if val in (None, "", 0):
+                continue
+            try:
+                return int(val)
+            except Exception:
+                continue
+        return None
 
     # ============================ CRUD ============================
     def crear_corte(
@@ -168,25 +181,23 @@ class CortesModel:
         # Servicio (opcional)
         srv_row = None
         if servicio_id:
-            # lectura directa por ID
-            srv_row = self.servicios.get_all(where=f"id = {int(servicio_id)}", params=None)  # API flexible en servicios_model
-            srv_row = (srv_row or [None])[0]
+            try:
+                srv_row = self.servicios.get_by_id(int(servicio_id))
+            except Exception:
+                srv_row = None
 
         # Cálculos
-        precio_base, desc, total, promo_id, pct, com = self._calcular_precios_y_comision(
+        precio_base, desc, total, promo_id = self._calcular_totales(
             servicio_row=srv_row,
-            trabajador_id=int(trabajador_id),
             dt=dt,
             aplicar_promo=bool(aplicar_promo),
             precio_base_manual=precio_base_manual
         )
-        suc = (total - com).quantize(Decimal("0.01"))
 
         cols = [
             E_CORTE.FECHA_HORA.value, E_CORTE.TIPO.value, E_CORTE.TRABAJADOR_ID.value,
             E_CORTE.SERVICIO_ID.value, E_CORTE.AGENDA_ID.value, E_CORTE.PROMO_ID.value,
             E_CORTE.PRECIO_BASE.value, E_CORTE.DESCUENTO.value, E_CORTE.TOTAL.value,
-            E_CORTE.COM_PCT.value, E_CORTE.COM_MONTO.value, E_CORTE.SUC_MONTO.value,
             E_CORTE.DESCRIPCION.value, E_CORTE.CREATED_BY.value
         ]
         vals = [
@@ -195,7 +206,6 @@ class CortesModel:
             int(agenda_id) if agenda_id else None,
             int(promo_id) if promo_id else None,
             float(precio_base), float(desc), float(total),
-            float(pct), float(com), float(suc),
             descripcion, created_by
         ]
         placeholders = ",".join(["%s"] * len(cols))
@@ -215,6 +225,94 @@ class CortesModel:
             )  # :contentReference[oaicite:28]{index=28}
 
         return {"status": "success", "message": "Corte registrado."}
+
+    def get_by_agenda(self, agenda_id: int) -> Optional[Dict[str, Any]]:
+        """Devuelve el corte asociado a una agenda, si existe."""
+        try:
+            q = f"SELECT * FROM {E_CORTE.TABLE.value} WHERE {E_CORTE.AGENDA_ID.value}=%s LIMIT 1"
+            return self.db.get_data(q, (agenda_id,), dictionary=True)
+        except Exception:
+            return None
+
+    def crear_corte_desde_cita(
+        self,
+        cita: Dict[str, Any],
+        *,
+        fecha_corte: Optional[datetime] = None,
+        created_by: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Genera un corte AGENDADO a partir de una cita completada.
+        Evita duplicados verificando si ya existe un corte ligado a la agenda.
+        """
+        if not cita:
+            return {"status": "error", "message": "Cita no encontrada."}
+
+        try:
+            agenda_id = int(cita.get(E_AGENDA.ID.value) or cita.get("id"))
+        except Exception:
+            return {"status": "error", "message": "Cita sin identificador."}
+        if agenda_id in (None, "", 0):
+            return {"status": "error", "message": "Cita sin identificador."}
+
+        existing = self.get_by_agenda(agenda_id)
+        if existing:
+            return {"status": "exists", "message": "El corte ya fue generado.", "corte": existing}
+
+        trabajador_id = cita.get(E_AGENDA.TRABAJADOR_ID.value) or cita.get("trabajador_id")
+        try:
+            trabajador_id = int(trabajador_id) if trabajador_id not in (None, "", 0) else None
+        except Exception:
+            trabajador_id = None
+        if trabajador_id is None:
+            return {"status": "error", "message": "La cita no tiene trabajador asignado."}
+
+        servicio_id = cita.get("servicio_id")
+        try:
+            servicio_id = int(servicio_id) if servicio_id not in (None, "", 0) else None
+        except Exception:
+            servicio_id = None
+
+        descripcion = (
+            cita.get(E_AGENDA.CLIENTE_NOM.value) or
+            cita.get("cliente") or
+            cita.get(E_AGENDA.TITULO.value) or
+            f"Cita #{agenda_id}"
+        )
+
+        def _as_float(val: Any) -> Optional[float]:
+            if val in (None, "", 0):
+                return None
+            try:
+                return float(val)
+            except Exception:
+                return None
+
+        precio_manual = (
+            _as_float(cita.get("total")) or
+            _as_float(cita.get("precio_unit")) or
+            _as_float(cita.get("precio_base"))
+        )
+
+        fh = fecha_corte or cita.get(E_AGENDA.FIN.value) or cita.get("fecha_fin") or datetime.now()
+        if isinstance(fh, str):
+            try:
+                fh = datetime.fromisoformat(fh)
+            except Exception:
+                fh = datetime.now()
+
+        payload = dict(
+            trabajador_id=int(trabajador_id),
+            tipo=E_CORTE_TIPO.AGENDADO.value,
+            servicio_id=int(servicio_id) if servicio_id else None,
+            agenda_id=agenda_id,
+            fecha_hora=fh,
+            aplicar_promo=True,
+            precio_base_manual=precio_manual,
+            descripcion=descripcion,
+            created_by=created_by,
+        )
+        return self.crear_corte(**payload)
 
     def eliminar_corte(self, corte_id: int) -> Dict[str, Any]:
         # (UI debe validar rol root antes de llamar)

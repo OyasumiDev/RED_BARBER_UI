@@ -104,6 +104,8 @@ class PromosModel:
         self._ensure_index("idx_promos_estado",   E_PROMO.ESTADO.value)
         self._ensure_index("idx_promos_fecha_ini", E_PROMO.FECHA_INI.value)
         self._ensure_index("idx_promos_fecha_fin", E_PROMO.FECHA_FIN.value)
+        # Columna para precio final (monto fijo resultante)
+        self._ensure_column(E_PROMO.PRECIO_FINAL.value, "DECIMAL(10,2) NULL DEFAULT NULL")
 
     def _ensure_index(self, index_name: str, column: str) -> None:
         q = """
@@ -117,6 +119,19 @@ class PromosModel:
         row = self.db.get_data(q, (E_PROMO.TABLE.value, index_name), dictionary=True)
         if not row:
             self.db.run_query(f"CREATE INDEX {index_name} ON {E_PROMO.TABLE.value} ({column})")
+
+    def _ensure_column(self, column: str, definition: str) -> None:
+        q = """
+            SELECT 1
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND COLUMN_NAME = %s
+            LIMIT 1
+        """
+        row = self.db.get_data(q, (E_PROMO.TABLE.value, column), dictionary=True)
+        if not row:
+            self.db.run_query(f"ALTER TABLE {E_PROMO.TABLE.value} ADD COLUMN {column} {definition}")
 
     # ======================== QUERIES ========================
     def get_by_id(self, promo_id: int) -> Optional[Dict[str, Any]]:
@@ -198,6 +213,7 @@ class PromosModel:
         servicio_id: int,
         tipo_descuento: str,
         valor_descuento: float,
+        precio_final: Optional[float] = None,
         estado: str = E_PROMO_ESTADO.ACTIVA.value,
         fecha_inicio: Optional[date] = None,
         fecha_fin: Optional[date] = None,
@@ -210,6 +226,7 @@ class PromosModel:
         try:
             cols = [
                 E_PROMO.NOMBRE.value, E_PROMO.SERVICIO_ID.value, E_PROMO.TIPO_DESC.value, E_PROMO.VALOR_DESC.value,
+                E_PROMO.PRECIO_FINAL.value,
                 E_PROMO.ESTADO.value, E_PROMO.FECHA_INI.value, E_PROMO.FECHA_FIN.value,
                 E_PROMO.LUN.value, E_PROMO.MAR.value, E_PROMO.MIE.value, E_PROMO.JUE.value,
                 E_PROMO.VIE.value, E_PROMO.SAB.value, E_PROMO.DOM.value,
@@ -217,6 +234,7 @@ class PromosModel:
             ]
             vals = [
                 nombre, int(servicio_id), tipo_descuento, float(valor_descuento),
+                (float(precio_final) if precio_final is not None else None),
                 estado, fecha_inicio, fecha_fin,
                 int(aplica_lunes), int(aplica_martes), int(aplica_miercoles), int(aplica_jueves),
                 int(aplica_viernes), int(aplica_sabado), int(aplica_domingo),
@@ -271,6 +289,21 @@ class PromosModel:
         p = Decimal(str(precio_base or 0)).quantize(Decimal("0.01"))
         if not promo_row:
             return (p, Decimal("0.00"))
+
+        stored_final = promo_row.get(E_PROMO.PRECIO_FINAL.value)
+        final_from_db: Optional[Decimal] = None
+        if stored_final is not None:
+            try:
+                final_from_db = Decimal(str(stored_final)).quantize(Decimal("0.01"))
+            except Exception:
+                final_from_db = None
+        if final_from_db is not None:
+            if final_from_db > p:
+                final_from_db = p
+            if final_from_db < Decimal("0.00"):
+                final_from_db = Decimal("0.00")
+            desc_db = (p - final_from_db).quantize(Decimal("0.01"))
+            return (final_from_db, desc_db)
 
         tipo = str(promo_row.get(E_PROMO.TIPO_DESC.value) or "").lower()
         val  = Decimal(str(promo_row.get(E_PROMO.VALOR_DESC.value) or 0)).quantize(Decimal("0.01"))
